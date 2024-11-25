@@ -6,7 +6,9 @@ WindowDisplayController::WindowDisplayController(sf::RenderWindow& win)
     : window(win)
     , lastVolume(0.0)
     , volumeChangeAccumulator(0.0)
-    , lastHue(0.0) {}
+    , lastHue(0.0)
+{
+}
 
 double WindowDisplayController::clamp(double value, double min, double max) {
     return std::max(min, std::min(value, max));
@@ -48,58 +50,55 @@ void WindowDisplayController::updateDisplay(double spectralCentroid, double volu
     lastVolume = volume;
 
     // Accumulate recent volume changes with decay
-    volumeChangeAccumulator *= 0.7; // Decay factor
-    volumeChangeAccumulator += std::max(0.0, volumeChange * 5.0);
+    volumeChangeAccumulator *= params.volumeDecayRate;
+    volumeChangeAccumulator += std::max(0.0, volumeChange * params.volumeAmplification);
     volumeChangeAccumulator = clamp(volumeChangeAccumulator, 0.0, 1.0);
 
-    // SUPER sensitive spectral centroid processing
-    // First, apply non-linear scaling to emphasize small changes
-    double nonLinearCentroid = std::pow(spectralCentroid, 0.4); // Make small changes more significant
+    // Spectral centroid processing
+    double nonLinearCentroid = std::pow(spectralCentroid, params.spectralPower);
+    double expandedCentroid = nonLinearCentroid * params.spectralMultiplier;
 
-    // Multiply the range dramatically (10x instead of 4x)
-    double expandedCentroid = nonLinearCentroid * 10.0;
-
-    // Add some additional modulation based on the rate of change
+    // Add modulation based on rate of change
     static double lastRawCentroid = spectralCentroid;
     double centroidChange = std::abs(spectralCentroid - lastRawCentroid);
     lastRawCentroid = spectralCentroid;
 
-    // Add extra rotation based on how quickly the centroid is changing
-    expandedCentroid += centroidChange * 20.0;
-
-    // Wrap to keep in 0-1 range
+    expandedCentroid += centroidChange * params.changeMultiplier;
     expandedCentroid = fmod(expandedCentroid, 1.0);
 
-    // Use very light smoothing to maintain responsiveness
+    // Smooth hue changes
     double targetHue = expandedCentroid;
-    lastHue = lastHue * 0.3 + targetHue * 0.7; // More weight on new values
+    lastHue = lastHue * params.hueSmoothing + targetHue * (1.0 - params.hueSmoothing);
 
-    // Calculate final hue with additional modulation
+    // Calculate final hue with pulse modulation
     double hue = fmod(lastHue + volumeChangeAccumulator * 0.2, 1.0);
 
-    // Calculate brightness using both steady volume and sudden changes
-    double baseValue = std::pow(volume * 2.5, 0.7);
-    double pulseValue = volumeChangeAccumulator * 0.5;
-    double value = clamp(baseValue + pulseValue, 0.15, 1.0);
+    // Calculate brightness
+    double baseValue = std::pow(volume * params.volumeMultiplier, params.volumePower);
+    double pulseValue = volumeChangeAccumulator * params.pulseMultiplier;
+    double value = clamp(baseValue + pulseValue, params.minBrightness, params.maxBrightness);
 
-    // Dynamic saturation - fuller colors during loud moments
-    double saturation = clamp(0.8 + volumeChangeAccumulator * 0.2, 0.8, 1.0);
+    // Calculate saturation
+    double saturation = clamp(
+        params.baseSaturation + volumeChangeAccumulator * params.pulseSaturation,
+        params.baseSaturation,
+        1.0
+    );
 
-    // Convert to RGB color
+    // Convert to RGB and update display
     sf::Color color = HSVtoRGB(hue, saturation, value);
-
-    // Debug output (every 60 frames or so)
-    static int frameCount = 0;
-    if (++frameCount % 60 == 0) {
-        std::cout << "Color values - Raw Centroid: " << spectralCentroid
-            << " -> NonLinear: " << nonLinearCentroid
-            << " -> Expanded: " << expandedCentroid
-            << " -> Final Hue: " << hue
-            << " Change Rate: " << centroidChange
-            << std::endl;
-    }
-
-    // Clear window with new color
     window.clear(color);
     window.display();
+
+    // Debug output
+    static int frameCount = 0;
+    if (++frameCount % 60 == 0) {
+        std::cout << "Spectral: " << spectralCentroid
+            << " -> NonLinear: " << nonLinearCentroid
+            << " -> Expanded: " << expandedCentroid
+            << " Change: " << centroidChange
+            << " Volume: " << volume
+            << " Pulse: " << volumeChangeAccumulator
+            << std::endl;
+    }
 }
