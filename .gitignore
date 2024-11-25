@@ -1,13 +1,9 @@
-# Visual Studio temporary files
-.vs/
-
-# Build results
-x64/
-Debug/
-
-# User-specific files
-*.user
-
-# Don't ignore these important files
-!extern/SFML/lib/*.dll
-!extern/SFML/lib/*.lib
+# Visual Studio files 
+.vs/ 
+*.user 
+Debug/ 
+Release/ 
+x64/ 
+*.pdb 
+!extern/SFML/lib/*.dll 
+!extern/SFML/lib/*.lib 
