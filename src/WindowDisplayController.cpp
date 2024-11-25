@@ -1,8 +1,14 @@
 // WindowDisplayController.cpp
 #include "WindowDisplayController.hpp"
+#include <iostream>
 
 WindowDisplayController::WindowDisplayController(sf::RenderWindow& win)
-    : window(win) {}
+    : window(win)
+    , lastVolume(0.0)
+    , volumeChangeAccumulator(0.0)
+    , lastHue(0.0)
+{
+}
 
 double WindowDisplayController::clamp(double value, double min, double max) {
     return std::max(min, std::min(value, max));
@@ -38,17 +44,61 @@ sf::Color WindowDisplayController::HSVtoRGB(double hue, double saturation, doubl
     );
 }
 
-void WindowDisplayController::updateDisplay(double input1, double input2) {
-    // Map first input to hue (0-1 range)
-    double hue = clamp(input1);
+void WindowDisplayController::updateDisplay(double spectralCentroid, double volume) {
+    // Detect sudden volume changes (pulses)
+    double volumeChange = volume - lastVolume;
+    lastVolume = volume;
 
-    // Map second input to brightness/value (0-1 range)
-    double brightness = clamp(input2);
+    // Accumulate recent volume changes with decay
+    volumeChangeAccumulator *= params.volumeDecayRate;
+    volumeChangeAccumulator += std::max(0.0, volumeChange * params.volumeAmplification);
+    volumeChangeAccumulator = clamp(volumeChangeAccumulator, 0.0, 1.0);
 
-    // Convert to RGB color (using constant saturation for vibrant colors)
-    sf::Color color = HSVtoRGB(hue, 1.0, brightness);
+    // Spectral centroid processing
+    double nonLinearCentroid = std::pow(spectralCentroid, params.spectralPower);
+    double expandedCentroid = nonLinearCentroid * params.spectralMultiplier;
 
-    // Clear window with new color
+    // Add modulation based on rate of change
+    static double lastRawCentroid = spectralCentroid;
+    double centroidChange = std::abs(spectralCentroid - lastRawCentroid);
+    lastRawCentroid = spectralCentroid;
+
+    expandedCentroid += centroidChange * params.changeMultiplier;
+    expandedCentroid = fmod(expandedCentroid, 1.0);
+
+    // Smooth hue changes
+    double targetHue = expandedCentroid;
+    lastHue = lastHue * params.hueSmoothing + targetHue * (1.0 - params.hueSmoothing);
+
+    // Calculate final hue with pulse modulation
+    double hue = fmod(lastHue + volumeChangeAccumulator * 0.2, 1.0);
+
+    // Calculate brightness
+    double baseValue = std::pow(volume * params.volumeMultiplier, params.volumePower);
+    double pulseValue = volumeChangeAccumulator * params.pulseMultiplier;
+    double value = clamp(baseValue + pulseValue, params.minBrightness, params.maxBrightness);
+
+    // Calculate saturation
+    double saturation = clamp(
+        params.baseSaturation + volumeChangeAccumulator * params.pulseSaturation,
+        params.baseSaturation,
+        1.0
+    );
+
+    // Convert to RGB and update display
+    sf::Color color = HSVtoRGB(hue, saturation, value);
     window.clear(color);
     window.display();
+
+    // Debug output
+    static int frameCount = 0;
+    if (++frameCount % 60 == 0) {
+        std::cout << "Spectral: " << spectralCentroid
+            << " -> NonLinear: " << nonLinearCentroid
+            << " -> Expanded: " << expandedCentroid
+            << " Change: " << centroidChange
+            << " Volume: " << volume
+            << " Pulse: " << volumeChangeAccumulator
+            << std::endl;
+    }
 }

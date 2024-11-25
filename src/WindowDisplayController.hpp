@@ -9,18 +9,44 @@ class WindowDisplayController {
 private:
     sf::RenderWindow& window;
 
-    // Helper function to clamp values between min and max
-    double clamp(double value, double min = 0.0, double max = 1.0);
+    // State tracking
+    double lastVolume;
+    double volumeChangeAccumulator;
+    double lastHue;
 
-    // Convert HSV to RGB color
+    // Tuning parameters
+    struct {
+        // Volume pulse detection
+        double volumeDecayRate = 0.7;      // How quickly volume pulses fade (0-1)
+        double volumeAmplification = 2.0;   // How much to amplify sudden volume changes
+
+        // Spectral sensitivity
+        double spectralPower = 0.4;        // Non-linear scaling power
+        double spectralMultiplier = 10.0;  // How much to multiply spectral changes
+        double changeMultiplier = 20.0;    // Additional rotation from spectral changes
+
+        // Color smoothing
+        double hueSmoothing = 0.3;         // Color change smoothing factor
+
+        // Brightness settings
+        double volumePower = 0.7;          // Non-linear volume scaling
+        double volumeMultiplier = 4;     // Base volume amplification
+        double pulseMultiplier = 3;      // Pulse brightness effect
+        double minBrightness = 0;       // Minimum brightness
+        double maxBrightness = 2.0;        // Maximum brightness
+
+        // Saturation settings
+        double baseSaturation = 0.8;       // Base color saturation
+        double pulseSaturation = 0.2;      // Pulse saturation effect
+    } params;
+
+    // Helper functions
+    double clamp(double value, double min = 0.0, double max = 1.0);
     sf::Color HSVtoRGB(double hue, double saturation, double value);
 
 public:
-    // Constructor
     WindowDisplayController(sf::RenderWindow& win);
-
-    // Update window color based on two inputs
-    void updateDisplay(double input1, double input2);
+    void updateDisplay(double spectralCentroid, double volume);
 };
 
 #endif // WINDOW_DISPLAY_CONTROLLER_HPP
