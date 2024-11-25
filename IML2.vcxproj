@@ -151,7 +151,6 @@ xcopy /y /d "$(ProjectDir)External\SFML\bin\sfml-network-d-2.dll" "$(OutDir)"</C
   <ItemGroup>
     <ClCompile Include="src\AudioAnalyzer.cpp" />
     <ClCompile Include="src\IML2.cpp" />
-    <ClCompile Include="src\IML2.cpp" />
     <ClCompile Include="src\WindowDisplayController.cpp" />
   </ItemGroup>
   <ItemGroup>
