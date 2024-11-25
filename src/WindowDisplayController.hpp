@@ -9,6 +9,11 @@ class WindowDisplayController {
 private:
     sf::RenderWindow& window;
 
+    // State tracking for enhanced dynamics
+    double lastVolume;
+    double volumeChangeAccumulator;
+    double lastHue;
+
     // Helper function to clamp values between min and max
     double clamp(double value, double min = 0.0, double max = 1.0);
 

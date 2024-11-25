@@ -14,7 +14,7 @@ int main() {
         return -1;
     }
 
-    std::cout << "Starting main loop" << std::endl;
+    std::cout << "Starting main loop - Play some audio to see the effect!" << std::endl;
 
     // Main loop
     while (window.isOpen()) {
@@ -31,16 +31,18 @@ int main() {
         float spectralCentroid = audioAnalyzer.getSpectralCentroid();
         float volume = audioAnalyzer.getVolume();
 
-        // Ensure we're getting non-zero values occasionally
+        // Debug output every 60 frames
         static int frameCount = 0;
-        if (++frameCount % 60 == 0) {  // Print every 60 frames
-            std::cout << "Frame " << frameCount 
-                     << " - Centroid: " << spectralCentroid 
-                     << " Volume: " << volume << std::endl;
+        if (++frameCount % 60 == 0) {
+            std::cout << "\rAudio - Centroid: " << spectralCentroid
+                << " Volume: " << volume << std::flush;
         }
 
         // Update display using audio parameters
         displayController.updateDisplay(spectralCentroid, volume);
+
+        // Small sleep to prevent excessive CPU usage
+        sf::sleep(sf::milliseconds(16)); // ~60 fps
     }
 
     audioAnalyzer.stop();
