@@ -18,7 +18,7 @@ private:
     struct {
         // Volume pulse detection
         double volumeDecayRate = 0.7;      // How quickly volume pulses fade (0-1)
-        double volumeAmplification = 5.0;   // How much to amplify sudden volume changes
+        double volumeAmplification = 2.0;   // How much to amplify sudden volume changes
 
         // Spectral sensitivity
         double spectralPower = 0.4;        // Non-linear scaling power
@@ -30,10 +30,10 @@ private:
 
         // Brightness settings
         double volumePower = 0.7;          // Non-linear volume scaling
-        double volumeMultiplier = 2.5;     // Base volume amplification
-        double pulseMultiplier = 0.5;      // Pulse brightness effect
-        double minBrightness = 0.15;       // Minimum brightness
-        double maxBrightness = 1.0;        // Maximum brightness
+        double volumeMultiplier = 4;     // Base volume amplification
+        double pulseMultiplier = 3;      // Pulse brightness effect
+        double minBrightness = 0;       // Minimum brightness
+        double maxBrightness = 2.0;        // Maximum brightness
 
         // Saturation settings
         double baseSaturation = 0.8;       // Base color saturation
