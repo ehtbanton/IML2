@@ -43,7 +43,7 @@ void WindowDisplayController::updateDisplay(double input1, double input2) {
     double hue = clamp(input1);
 
     // Map second input to brightness/value (0-1 range)
-    double brightness = clamp(input2);
+    double brightness = clamp(input2+0.5);
 
     // Convert to RGB color (using constant saturation for vibrant colors)
     sf::Color color = HSVtoRGB(hue, 1.0, brightness);
