@@ -150,11 +150,13 @@ xcopy /y /d "$(ProjectDir)External\SFML\bin\sfml-network-d-2.dll" "$(OutDir)"</C
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\AudioAnalyzer.cpp" />
-    <ClCompile Include="src\IML2.cpp" />
+    <ClCompile Include="src\0 main.cpp" />
+    <ClCompile Include="src\WasapiCapture.cpp" />
     <ClCompile Include="src\WindowDisplayController.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AudioAnalyzer.hpp" />
+    <ClInclude Include="src\WasapiCapture.hpp" />
     <ClInclude Include="src\WindowDisplayController.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
