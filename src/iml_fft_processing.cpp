@@ -1,5 +1,6 @@
 ﻿#define _USE_MATH_DEFINES
 #include <SFML/Graphics.hpp>
+#include <SFML/Audio.hpp>
 #include <fftw3.h>
 #include <windows.h>
 #include <mmdeviceapi.h>
@@ -641,6 +642,121 @@ public:
     }
 };
 
+
+class TestSignalGenerator : public sf::SoundStream {
+private:
+    static const size_t SAMPLE_RATE = 48000;
+    static const size_t SAMPLES_PER_CHUNK = 2048;
+
+    double currentPhase;
+    double currentFrequency;
+    double currentTime;
+
+    double startFreq;
+    double endFreq;
+    double sweepDuration;
+    bool isLogarithmic;
+
+    virtual bool onGetData(Chunk& data) override {
+        static std::vector<sf::Int16> chunk(SAMPLES_PER_CHUNK);
+
+        for (size_t i = 0; i < SAMPLES_PER_CHUNK; ++i) {
+            // Update time
+            if (currentTime >= sweepDuration) {
+                if (getLoop()) {
+                    currentTime = 0;
+                    currentPhase = 0;
+                    currentFrequency = startFreq;
+                }
+                else {
+                    return false;
+                }
+            }
+
+            // Calculate current frequency
+            if (isLogarithmic) {
+                double t = currentTime / sweepDuration;
+                currentFrequency = startFreq * std::exp(t * std::log(endFreq / startFreq));
+            }
+            else {
+                double t = currentTime / sweepDuration;
+                currentFrequency = startFreq + (endFreq - startFreq) * t;
+            }
+
+            // Generate sample
+            double amplitude = 0.5; // Reduced amplitude to avoid clipping
+            chunk[i] = static_cast<sf::Int16>(32767.0 * amplitude * std::sin(currentPhase));
+
+            // Update phase and time
+            currentPhase += 2.0 * M_PI * currentFrequency / SAMPLE_RATE;
+            while (currentPhase >= 2.0 * M_PI) {
+                currentPhase -= 2.0 * M_PI;
+            }
+
+            currentTime += 1.0 / SAMPLE_RATE;
+        }
+
+        data.samples = chunk.data();
+        data.sampleCount = SAMPLES_PER_CHUNK;
+        return true;
+    }
+
+    virtual void onSeek(sf::Time timeOffset) override {
+        currentTime = timeOffset.asSeconds();
+
+        // Recalculate frequency for the new position
+        if (isLogarithmic) {
+            double t = currentTime / sweepDuration;
+            currentFrequency = startFreq * std::exp(t * std::log(endFreq / startFreq));
+        }
+        else {
+            double t = currentTime / sweepDuration;
+            currentFrequency = startFreq + (endFreq - startFreq) * t;
+        }
+
+        currentPhase = 0;  // Reset phase to avoid clicks
+    }
+
+public:
+    TestSignalGenerator()
+        : currentPhase(0)
+        , currentFrequency(0)
+        , currentTime(0)
+        , startFreq(0)
+        , endFreq(0)
+        , sweepDuration(0)
+        , isLogarithmic(true)
+    {
+        initialize(1, SAMPLE_RATE);  // Mono, 48kHz
+    }
+
+    void setupSweep(double startFrequency, double endFrequency, double duration, bool logarithmic = true) {
+        stop();
+
+        startFreq = startFrequency;
+        endFreq = endFrequency;
+        sweepDuration = duration;
+        isLogarithmic = logarithmic;
+
+        currentTime = 0;
+        currentPhase = 0;
+        currentFrequency = startFreq;
+    }
+
+    void startSweep(bool loop = false) {
+        setLoop(loop);
+        play();
+    }
+
+    // Debug function to check current state
+    void printDebugInfo() const {
+        std::cout << "Current time: " << currentTime
+            << "s, Freq: " << currentFrequency
+            << "Hz, Phase: " << currentPhase << std::endl;
+    }
+};
+
+
 int main() {
     sf::VideoMode desktop = sf::VideoMode::getDesktopMode();
     sf::RenderWindow window(sf::VideoMode(1280, 720), "Real-time Spectrogram",
@@ -649,6 +765,11 @@ int main() {
 
     Spectrogram spectrogram(window);
     AudioCapture capture;
+    TestSignalGenerator signalGen;
+
+    // Start with a slower sweep for testing
+    signalGen.setupSweep(20.0, 2000.0, 10.0, true);  // 20 Hz to 2 kHz over 10 seconds
+    signalGen.startSweep(true);
 
     capture.setSpectrogram(&spectrogram);
 
@@ -657,6 +778,7 @@ int main() {
         return -1;
     }
 
+    sf::Clock debugTimer;
     while (window.isOpen()) {
         sf::Event event;
         while (window.pollEvent(event)) {
@@ -669,6 +791,31 @@ int main() {
                 window.setView(sf::View(visibleArea));
                 spectrogram.handleResize();
             }
+            else if (event.type == sf::Event::KeyPressed) {
+                if (event.key.code == sf::Keyboard::Space) {
+                    signalGen.stop();
+                    signalGen.setupSweep(20.0, 2000.0, 10.0, true);
+                    signalGen.startSweep(true);
+                }
+                else if (event.key.code == sf::Keyboard::Up) {
+                    // Faster sweep
+                    signalGen.stop();
+                    signalGen.setupSweep(20.0, 2000.0, 5.0, true);
+                    signalGen.startSweep(true);
+                }
+                else if (event.key.code == sf::Keyboard::Down) {
+                    // Slower sweep
+                    signalGen.stop();
+                    signalGen.setupSweep(20.0, 2000.0, 15.0, true);
+                    signalGen.startSweep(true);
+                }
+            }
+        }
+
+        // Print debug info every second
+        if (debugTimer.getElapsedTime().asSeconds() >= 1.0f) {
+            signalGen.printDebugInfo();
+            debugTimer.restart();
         }
 
         window.clear(sf::Color(10, 10, 10));
