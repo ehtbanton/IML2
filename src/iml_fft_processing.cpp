@@ -40,10 +40,10 @@ class Spectrogram {
 private:
     static const size_t FFT_SIZE = 1024;
     static const size_t HOP_SIZE = 512;
-    // Calculate HISTORY_SIZE based on desired time window (10 seconds) at 48kHz
+    // Calculate HISTORY_SIZE based on desired time window (30 seconds) at 48kHz
     // HISTORY_SIZE = (sample_rate * desired_seconds) / HOP_SIZE
-    // For 48kHz and 10 seconds: (48000 * 10) / 512 ≈ 937
-    static const size_t HISTORY_SIZE = 937;
+    // For 48kHz and 30 seconds: (48000 * 30) / 512 ≈ 2812
+    static const size_t HISTORY_SIZE = 2812;
 
     // Shared memory handles
     HANDLE hMapFile;
@@ -76,25 +76,28 @@ private:
     double time_window;  // Store actual time window in seconds
 
     sf::Color getColor(float magnitude) {
-        float db = 20 * std::log10(magnitude + 1e-6);
-        float normalized = (db + 50) / 100.0f; // -50 to +50 dB range
+        // Convert magnitude to decibels
+        float db = 20 * std::log10(magnitude + 1e-9);
+
+        // Wider dynamic range: -50dB to -10dB (40dB range)
+        float normalized = (db + 50) / 40.0f;
         normalized = std::max(0.0f, std::min(1.0f, normalized));
 
-        // Enhanced color mapping for better visualization
-        if (normalized < 0.25f) {
-            return sf::Color(0, 0, 100 + (normalized * 4 * 155));
+        // Modified thresholds to show more gradual color changes
+        if (normalized < 0.4f) {  // More space for darker blues
+            return sf::Color(0, 0, std::min(255.0f, normalized * 255.0f / 0.4f));
         }
-        else if (normalized < 0.5f) {
-            float t = (normalized - 0.25f) * 4;
+        else if (normalized < 0.6f) {  // Gradual transition to cyan
+            float t = (normalized - 0.4f) * 5.0f;
             return sf::Color(0, t * 255, 255);
         }
-        else if (normalized < 0.75f) {
-            float t = (normalized - 0.5f) * 4;
-            return sf::Color(t * 255, 255, 255 - (t * 255));
+        else if (normalized < 0.8f) {  // Gradual transition to yellow
+            float t = (normalized - 0.6f) * 5.0f;
+            return sf::Color(t * 255, 255, 255 * (1.0f - t));
         }
-        else {
-            float t = (normalized - 0.75f) * 4;
-            return sf::Color(255, 255 - (t * 255), 0);
+        else {  // Red for the loudest signals
+            float t = (normalized - 0.8f) * 5.0f;
+            return sf::Color(255, 255 * (1.0f - t), 0);
         }
     }
 
@@ -117,13 +120,17 @@ private:
 
         // Create frequency labels
         frequencyLabels.clear();
-        float minFreq = 10.0f;
-        float maxFreq = 24000.0f;  // Adjusted for 48kHz sampling rate (Nyquist frequency)
+        float freqPerBin = 48000.0f / FFT_SIZE;
         int numLabels = 11;
+        const float minFreq = 10.0f;
+        const float maxFreq = 24000.0f;
 
         for (int i = 0; i < numLabels; ++i) {
             float t = i / float(numLabels - 1);
+            // Calculate frequency using logarithmic scale
             float freq = minFreq * std::pow(maxFreq / minFreq, t);
+            // Find nearest bin
+            float binIndex = freq / freqPerBin;
 
             std::stringstream ss;
             if (freq >= 1000.0f) {
@@ -133,20 +140,23 @@ private:
                 ss << std::fixed << std::setprecision(0) << freq << " Hz";
             }
 
-            float yPos = spectrogramPosition.y + spectrogramSize.y * (1.0f - t);
+            // Position using logarithmic scale
+            float yRatio = std::log10(freq / minFreq) / std::log10(maxFreq / minFreq);
+            float yPos = spectrogramPosition.y + spectrogramSize.y * (1.0f - yRatio);
+
             sf::Text label = createText(font, ss.str(), 12,
                 sf::Vector2f(spectrogramPosition.x - 70.0f, yPos - 6.0f));
             frequencyLabels.push_back(label);
         }
 
-        // Create time labels for 10 second window
+        // Create time labels for 30 second window
         timeLabels.clear();
         float secondsPerColumn = float(HOP_SIZE) / 48000.0f;  // Adjusted for 48kHz
         float totalTime = secondsPerColumn * HISTORY_SIZE;
         time_window = totalTime;
 
-        for (int i = 0; i <= 10; ++i) {
-            float t = i / 10.0f;
+        for (int i = 0; i <= 30; i += 5) {  // Show label every 5 seconds
+            float t = i / 30.0f;
             float time = t * totalTime;
             std::stringstream ss;
             ss << std::fixed << std::setprecision(1) << time << "s";
@@ -222,23 +232,46 @@ public:
         fftw_free(fft_out);
     }
 
+    // In the Spectrogram class, replace updateVertexPositions with:
     void updateVertexPositions() {
+        const float sampleRate = 48000.0f;
+        const float minFreq = 10.0f;  // Minimum frequency for log scale
+        const float maxFreq = 24000.0f;  // Maximum frequency (Nyquist)
+
+        // Calculate frequency for each bin
+        float freqPerBin = sampleRate / float(FFT_SIZE);
+
+        // Calculate vertex positions using logarithmic frequency mapping
         for (size_t x = 0; x < HISTORY_SIZE; ++x) {
             for (size_t y = 0; y < FFT_SIZE / 2; ++y) {
                 size_t idx = (x * FFT_SIZE / 2 + y) * 4;
 
+                // Calculate x position (time axis - remains linear)
                 float xRatio = x / float(HISTORY_SIZE);
-                float yRatio = y / float(FFT_SIZE / 2);
-
                 float xpos = spectrogramPosition.x + (xRatio * spectrogramSize.x);
-                float ypos = spectrogramPosition.y + ((1.0f - yRatio) * spectrogramSize.y);
                 float width = spectrogramSize.x / float(HISTORY_SIZE);
-                float height = spectrogramSize.y / float(FFT_SIZE / 2);
 
+                // Calculate frequency for this bin
+                float freq = y * freqPerBin;
+                freq = std::max(minFreq, std::min(maxFreq, freq));
+
+                // Calculate y position using logarithmic mapping
+                float yRatio = std::log10(freq / minFreq) / std::log10(maxFreq / minFreq);
+                yRatio = std::max(0.0f, std::min(1.0f, yRatio));
+                float ypos = spectrogramPosition.y + ((1.0f - yRatio) * spectrogramSize.y);
+
+                // Calculate height for this bin (difference between this and next frequency)
+                float nextFreq = (y + 1) * freqPerBin;
+                nextFreq = std::max(minFreq, std::min(maxFreq, nextFreq));
+                float nextYRatio = std::log10(nextFreq / minFreq) / std::log10(maxFreq / minFreq);
+                nextYRatio = std::max(0.0f, std::min(1.0f, nextYRatio));
+                float nextYpos = spectrogramPosition.y + ((1.0f - nextYRatio) * spectrogramSize.y);
+
+                // Assign vertex positions
                 vertices[idx].position = sf::Vector2f(xpos, ypos);
                 vertices[idx + 1].position = sf::Vector2f(xpos + width, ypos);
-                vertices[idx + 2].position = sf::Vector2f(xpos + width, ypos + height);
-                vertices[idx + 3].position = sf::Vector2f(xpos, ypos + height);
+                vertices[idx + 2].position = sf::Vector2f(xpos + width, nextYpos);
+                vertices[idx + 3].position = sf::Vector2f(xpos, nextYpos);
             }
         }
     }
@@ -254,19 +287,22 @@ public:
 
         while (buffer.size() >= FFT_SIZE) {
             // Apply window function and prepare FFT input
+            // Reduce input amplitude significantly
+            const float scale = 10.0f;
             for (size_t i = 0; i < FFT_SIZE; ++i) {
-                fft_in[i] = buffer[i] * window_function[i] * 32768.0;
+                fft_in[i] = buffer[i] * window_function[i] * scale;
             }
 
             // Perform FFT
             fftw_execute(fft_plan);
 
-            // Calculate magnitudes
+            // Calculate magnitudes with improved scaling
             std::vector<float> magnitudes(FFT_SIZE / 2);
             for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
                 float real = fft_out[i][0];
                 float imag = fft_out[i][1];
-                magnitudes[i] = std::sqrt(real * real + imag * imag) / FFT_SIZE;
+                // Square root for power spectrum, normalized by FFT size
+                magnitudes[i] = std::sqrt(real * real + imag * imag) / (FFT_SIZE * 2.0f);
             }
 
             // Update history and shared memory
