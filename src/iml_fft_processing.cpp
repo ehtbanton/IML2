@@ -37,6 +37,9 @@ sf::Text createText(const sf::Font& font, const std::string& content, unsigned i
     return text;
 }
 
+
+
+
 class Spectrogram {
 private:
     static const size_t FFT_SIZE = 1024;
@@ -45,6 +48,7 @@ private:
     // HISTORY_SIZE = (sample_rate * desired_seconds) / HOP_SIZE
     // For 48kHz and 30 seconds: (48000 * 30) / 512 ≈ 2812
     static const size_t HISTORY_SIZE = 2812;
+    std::vector<float> overlapBuffer;
 
     // Shared memory handles
     HANDLE hMapFile;
@@ -370,6 +374,9 @@ public:
     }
 };
 
+
+
+
 class AudioCapture {
 private:
     static const size_t BUFFER_SIZE = 2048;
@@ -395,30 +402,12 @@ private:
     Spectrogram* spectrogram;
 
     std::vector<float> stretchAudio(const std::vector<float>& input) {
-        if (input.empty()) return std::vector<float>(TARGET_SAMPLES, 0.0f);
+        std::vector<float> output(TARGET_SAMPLES, 0.0f);  // Initialize with silence
 
-        std::vector<float> output(TARGET_SAMPLES);
-
-        if (input.size() < TARGET_SAMPLES) {
-            float ratio = static_cast<float>(input.size() - 1) / (TARGET_SAMPLES - 1);
-
-            for (size_t i = 0; i < TARGET_SAMPLES; ++i) {
-                float pos = i * ratio;
-                size_t idx1 = static_cast<size_t>(pos);
-                size_t idx2 = std::min(idx1 + 1, input.size() - 1);
-                float frac = pos - idx1;
-
-                // Linear interpolation between samples
-                output[i] = input[idx1] * (1.0f - frac) + input[idx2] * frac;
-            }
-        }
-        else {
-            // If we have more samples than needed, use simple downsampling
-            float ratio = static_cast<float>(input.size()) / TARGET_SAMPLES;
-            for (size_t i = 0; i < TARGET_SAMPLES; ++i) {
-                size_t idx = static_cast<size_t>(i * ratio);
-                output[i] = input[idx];
-            }
+        // Copy available samples without interpolation
+        size_t samplesToCopy = std::min(input.size(), TARGET_SAMPLES);
+        if (samplesToCopy > 0) {
+            std::copy_n(input.begin(), samplesToCopy, output.begin());
         }
 
         return output;
@@ -643,6 +632,8 @@ public:
 };
 
 
+
+
 class TestSignalGenerator : public sf::SoundStream {
 private:
     static const size_t SAMPLE_RATE = 48000;
@@ -755,6 +746,8 @@ public:
             << "Hz, Phase: " << currentPhase << std::endl;
     }
 };
+
+
 
 
 int main() {
