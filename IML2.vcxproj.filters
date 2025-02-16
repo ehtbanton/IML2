@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\iml_fft_processing.cpp">
+    <ClCompile Include="src\_iml_fft_processing.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
