@@ -19,7 +19,22 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\_iml_fft_processing.cpp" />
+    <ClCompile Include="src\AudioCapture.cpp" />
+    <ClCompile Include="src\AudioFingerprinter.cpp" />
+    <ClCompile Include="src\AudioMatcher.cpp" />
+    <ClCompile Include="src\SpectrogramCache.cpp" />
+    <ClCompile Include="src\SpectrogramVisualizer.cpp" />
+    <ClCompile Include="src\TestHarness.cpp" />
+    <ClCompile Include="src\___main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\AudioCapture.h" />
+    <ClInclude Include="src\AudioFingerprinter.h" />
+    <ClInclude Include="src\AudioMatcher.h" />
+    <ClInclude Include="src\SpectrogramCache.h" />
+    <ClInclude Include="src\SpectrogramVisualizer.h" />
+    <ClInclude Include="src\stdafx.h" />
+    <ClInclude Include="src\TestHarness.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
@@ -109,7 +124,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)External\SFML\include;$(ProjectDir)External\FFTW\include</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -135,7 +150,7 @@ xcopy /y /d "$(ProjectDir)External\SFML\bin\sfml-network-d-2.dll" "$(OutDir)"</C
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)External\SFML\include;$(ProjectDir)External\FFTW\include</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

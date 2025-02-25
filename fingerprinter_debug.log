@@ -1,0 +1,33 @@
+--- AudioFingerprinter Debug Log Started ---
+Timestamp: 2025-02-25 00:55:16
+FFT_SIZE: 1024, HOP_SIZE: 512
+NUM_PEAKS: 6, MAX_TIME_DELTA: 100
+Debug level set to: 1
+Setting reference data with 2812 frames
+Generating fingerprints from 2812 frames...
+Processed 0/2812 frames in 1ms, 0 unique hashes, 0 total hashes
+Processed 500/2812 frames in 1854ms, 42692 unique hashes, 818585 total hashes
+Processed 1000/2812 frames in 3072ms, 45911 unique hashes, 1138967 total hashes
+Processed 1500/2812 frames in 4929ms, 67551 unique hashes, 2093082 total hashes
+Processed 2000/2812 frames in 6802ms, 87168 unique hashes, 3095727 total hashes
+Processed 2500/2812 frames in 8644ms, 88652 unique hashes, 4292822 total hashes
+Fingerprint generation complete in 9674ms: 89962 unique hashes, 4981452 total hashes, 55.3728 average positions per hash
+Found 13590 high-collision hashes (15.1064%)
+Starting self-test with reference data
+Extracted test segment: 100 frames starting at position 472
+Fingerprinter state reset
+Self-test #1: FAIL - Expected pos: 571, Actual pos: 0, Error: 571, Confidence: 0
+Extracted test segment: 100 frames starting at position 919
+Fingerprinter state reset
+Self-test #2: FAIL - Expected pos: 1018, Actual pos: 0, Error: 1018, Confidence: 0
+Extracted test segment: 100 frames starting at position 1386
+Fingerprinter state reset
+Self-test #3: FAIL - Expected pos: 1485, Actual pos: 0, Error: 1485, Confidence: 0
+Extracted test segment: 100 frames starting at position 1863
+Fingerprinter state reset
+Self-test #4: FAIL - Expected pos: 1962, Actual pos: 0, Error: 1962, Confidence: 0
+Extracted test segment: 100 frames starting at position 2342
+Fingerprinter state reset
+Self-test #5: FAIL - Expected pos: 2441, Actual pos: 0, Error: 2441, Confidence: 0
+Self-test complete: 0/5 tests passed
+Match result: pos=2346, votes=1535882/50344258, raw confidence=0.0305076, adjusted confidence=0.183046
