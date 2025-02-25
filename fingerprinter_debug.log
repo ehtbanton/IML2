@@ -1,0 +1,15 @@
+--- AudioFingerprinter Debug Log Started ---
+Timestamp: 2025-02-25 01:38:54
+FFT_SIZE: 1024, HOP_SIZE: 512
+NUM_PEAKS: 6, MAX_TIME_DELTA: 100
+Debug level set to: 1
+Setting reference data with 2812 frames
+Generating fingerprints from 2812 frames...
+Processed 0/2812 frames in 17ms, 4500 unique hashes, 4500 total hashes
+Processed 500/2812 frames in 4315ms, 457774 unique hashes, 2153723 total hashes
+Processed 1000/2812 frames in 6496ms, 521962 unique hashes, 3824199 total hashes
+Processed 1500/2812 frames in 9687ms, 577175 unique hashes, 6072400 total hashes
+Processed 2000/2812 frames in 12474ms, 614231 unique hashes, 8321800 total hashes
+Processed 2500/2812 frames in 14885ms, 619122 unique hashes, 10567005 total hashes
+Fingerprint generation complete in 16333ms: 621999 unique hashes, 11918295 total hashes, 19.1613 average positions per hash
+Found 27302 high-collision hashes (4.3894%)
