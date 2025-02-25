@@ -107,6 +107,12 @@ public:
     void handleResize() override;
     double getTimeWindow() const;
     std::vector<float> getCurrentMagnitudes();
+    void resetState() {
+        std::unique_lock<std::mutex> lock(history_mutex);
+        magnitude_history.clear();
+        column_timestamps.clear();
+        first_sample = true;
+    }
 };
 
 // Static spectrogram that displays pre-processed audio
