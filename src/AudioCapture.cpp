@@ -4,30 +4,6 @@
 
 #pragma comment(lib, "ole32.lib")
 
-// Function to normalize audio to a consistent RMS level
-void normalizeAudioBatch(std::vector<float>& samples, float targetRMS = 0.1f) {
-    if (samples.empty()) return;
-
-    // Calculate current RMS
-    float sumSquares = 0.0f;
-    for (const float& sample : samples) {
-        sumSquares += sample * sample;
-    }
-
-    float currentRMS = std::sqrt(sumSquares / static_cast<float>(samples.size()));
-
-    // Avoid division by very small numbers and only normalize if needed
-    if (currentRMS > 1e-6f) {
-        // Calculate scaling factor
-        float scale = targetRMS / currentRMS;
-
-        // Apply scaling
-        for (float& sample : samples) {
-            sample *= scale;
-        }
-    }
-}
-
 AudioCapture::AudioCapture()
     : deviceEnumerator(nullptr)
     , device(nullptr)
@@ -37,19 +13,22 @@ AudioCapture::AudioCapture()
     , isRunning(false)
     , buffer1()
     , buffer2()
-    , currentBuffer(nullptr)
+    , currentBuffer(&buffer1)
     , sampleRate(48000)
     , numChannels(2)
     , spectrogram(nullptr)
-    , batchSize(48000)
     , totalSamplesProcessed(0)
+    , mainThread(false)
+    , offsetThread(false)
 {
     HRESULT hr = CoInitialize(nullptr);
     if (SUCCEEDED(hr)) {
         initializeDevice();
     }
-    buffer1.reserve(batchSize);
-    buffer2.reserve(batchSize);
+
+    // Pre-allocate buffers to avoid reallocations
+    buffer1.reserve(sampleRate);  // 1 second of audio
+    buffer2.reserve(sampleRate);
 }
 
 AudioCapture::~AudioCapture() {
@@ -71,6 +50,7 @@ bool AudioCapture::start() {
     hr = audioClient->GetMixFormat(&pwfx);
     if (FAILED(hr)) return false;
 
+    // Set to 48kHz sample rate
     pwfx->nSamplesPerSec = 48000;
     pwfx->nAvgBytesPerSec = pwfx->nSamplesPerSec * pwfx->nBlockAlign;
 
@@ -92,33 +72,52 @@ bool AudioCapture::start() {
 
     sampleRate = pwfx->nSamplesPerSec;
     numChannels = pwfx->nChannels;
-    batchSize = sampleRate;
 
+    // Clear buffers before starting
+    buffer1.clear();
+    buffer2.clear();
+    currentBuffer = &buffer1;
+
+    // Start main capture and processing threads
     isRunning = true;
-    captureThread = std::thread(&AudioCapture::captureLoop, this);
+    mainThread = true;
+    offsetThread = true;
 
-    // Set thread priority to time critical for best audio performance
+    // Start the main capture thread
+    captureThread = std::thread(&AudioCapture::captureLoop, this);
     SetThreadPriority(captureThread.native_handle(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    // Start the main processing thread (processes every 0.5s)
+    mainProcessThread = std::thread(&AudioCapture::mainProcessLoop, this);
+    SetThreadPriority(mainProcessThread.native_handle(), THREAD_PRIORITY_ABOVE_NORMAL);
+
+    // Start the offset processing thread (offset by 0.25s)
+    offsetProcessThread = std::thread(&AudioCapture::offsetProcessLoop, this);
+    SetThreadPriority(offsetProcessThread.native_handle(), THREAD_PRIORITY_ABOVE_NORMAL);
+
     return true;
 }
 
 void AudioCapture::stop() {
     isRunning = false;
+    mainThread = false;
+    offsetThread = false;
+
     if (captureThread.joinable()) {
         captureThread.join();
     }
+
+    if (mainProcessThread.joinable()) {
+        mainProcessThread.join();
+    }
+
+    if (offsetProcessThread.joinable()) {
+        offsetProcessThread.join();
+    }
+
     if (audioClient) {
         audioClient->Stop();
     }
-}
-
-std::vector<float> AudioCapture::stretchAudio(const std::vector<float>& input) {
-    std::vector<float> output(TARGET_SAMPLES, 0.0f);
-    size_t samplesToCopy = std::min(input.size(), TARGET_SAMPLES);
-    if (samplesToCopy > 0) {
-        std::copy_n(input.begin(), samplesToCopy, output.begin());
-    }
-    return output;
 }
 
 bool AudioCapture::initializeDevice() {
@@ -143,19 +142,30 @@ void AudioCapture::cleanupDevice() {
     if (pwfx) { CoTaskMemFree(pwfx); pwfx = nullptr; }
 }
 
-void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
+void AudioCapture::processBatch(const std::vector<float>& batchBuffer, bool isOffset) {
     if (!spectrogram) return;
 
-    // Avoid unnecessary memory allocations
-    static std::vector<float> processBuffer;
-    processBuffer.clear();
+    // Skip if buffer is too small
+    if (batchBuffer.size() < 1024) {
+        return;
+    }
 
-    if (batchBuffer.size() >= TARGET_SAMPLES) {
-        processBuffer.assign(batchBuffer.begin(), batchBuffer.begin() + TARGET_SAMPLES);
+    // For debugging purposes
+    std::string threadType = isOffset ? "Offset" : "Main";
+
+    // We want to normalize the frequency spectrum
+    // Ensure we take exactly TARGET_SAMPLES / 2 samples (for half-second processing)
+    std::vector<float> processBuffer;
+    const size_t halfSecondSamples = TARGET_SAMPLES / 2;
+
+    if (batchBuffer.size() >= halfSecondSamples) {
+        // Take exactly half a second of audio
+        processBuffer.assign(batchBuffer.end() - halfSecondSamples, batchBuffer.end());
     }
     else {
+        // In case we don't have enough samples, pad with zeros
         processBuffer = batchBuffer;
-        processBuffer.resize(TARGET_SAMPLES, 0.0f);
+        processBuffer.resize(halfSecondSamples, 0.0f);
     }
 
     // Quickly determine if buffer is empty (silence)
@@ -168,25 +178,77 @@ void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
     }
 
     if (!isCompletelyEmpty) {
-        // Normalize the audio buffer to match the reference audio's level
-        normalizeAudioBatch(processBuffer);
-    }
+        // Process the samples in the spectrogram
+        spectrogram->processSamples(processBuffer);
 
-    std::vector<float> processedBatch;
-    if (isCompletelyEmpty && processBuffer.empty()) {
-        processedBatch.resize(TARGET_SAMPLES, 0.0f);
+        // Log processing for debug
+        std::cout << threadType << " Thread processed " << processBuffer.size()
+            << " samples at " << std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count()
+            << "s" << std::endl;
     }
-    else {
-        processedBatch = std::move(processBuffer); // Move instead of copy
-    }
+}
 
-    spectrogram->processSamples(processedBatch);
+void AudioCapture::mainProcessLoop() {
+    // Main processing thread - processes every 0.5 seconds
+    auto startTime = std::chrono::steady_clock::now();
+
+    while (mainThread) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+
+        if (elapsedMs >= 500) { // Every 0.5 seconds
+            // Take a snapshot of the current buffer
+            std::vector<float> snapshot;
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex);
+                snapshot = *currentBuffer; // Copy the entire buffer
+            }
+
+            // Process the snapshot
+            processBatch(snapshot, false);
+
+            // Reset timer
+            startTime = now;
+        }
+
+        // Sleep for a short time to avoid consuming too much CPU
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+void AudioCapture::offsetProcessLoop() {
+    // Offset processing thread - wait 0.25s to start, then process every 0.5s
+    std::this_thread::sleep_for(std::chrono::milliseconds(250)); // Initial offset
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    while (offsetThread) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+
+        if (elapsedMs >= 500) { // Every 0.5 seconds
+            // Take a snapshot of the current buffer
+            std::vector<float> snapshot;
+            {
+                std::lock_guard<std::mutex> lock(bufferMutex);
+                snapshot = *currentBuffer; // Copy the entire buffer
+            }
+
+            // Process the snapshot
+            processBatch(snapshot, true);
+
+            // Reset timer
+            startTime = now;
+        }
+
+        // Sleep for a short time to avoid consuming too much CPU
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void AudioCapture::captureLoop() {
-    batchStartTime = std::chrono::steady_clock::now();
-    lastPrintTime = batchStartTime;
-    currentBuffer = &buffer1;  // Start with buffer1
+    auto lastPrintTime = std::chrono::steady_clock::now();
 
     while (isRunning) {
         UINT32 packetLength = 0;
@@ -194,28 +256,6 @@ void AudioCapture::captureLoop() {
         if (FAILED(hr)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
-        }
-
-        auto now = std::chrono::steady_clock::now();
-        double elapsedSeconds = std::chrono::duration<double>(now - batchStartTime).count();
-
-        // If a second has passed, switch buffers and process the filled one
-        if (elapsedSeconds >= 0.5) { // Process twice per second for better responsiveness
-            // Switch buffers
-            std::vector<float>* bufferToProcess = currentBuffer;
-            currentBuffer = (currentBuffer == &buffer1) ? &buffer2 : &buffer1;
-            currentBuffer->clear();
-            currentBuffer->reserve(batchSize);
-
-            // Process the filled buffer in a separate thread to avoid missing samples
-            if (bufferToProcess->size() > 100) { // Only process non-empty buffers
-                std::thread processingThread([this, bufferToProcess]() {
-                    processBatch(*bufferToProcess);
-                    });
-                processingThread.detach();  // Let it run independently
-            }
-
-            batchStartTime = now;
         }
 
         if (packetLength == 0) {
@@ -236,23 +276,31 @@ void AudioCapture::captureLoop() {
             if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
                 float* floatData = reinterpret_cast<float*>(data);
 
-                // Ensure buffer has capacity to avoid reallocations
-                if (currentBuffer->size() + numFramesAvailable > currentBuffer->capacity()) {
-                    currentBuffer->reserve(currentBuffer->capacity() + batchSize);
-                }
+                // Lock the buffer while we add samples
+                std::lock_guard<std::mutex> lock(bufferMutex);
 
-                // Optimize the inner loop
-                currentBuffer->resize(currentBuffer->size() + numFramesAvailable);
-                size_t currentSize = currentBuffer->size() - numFramesAvailable;
+                // Reserve space for new samples to avoid reallocations
+                size_t oldSize = currentBuffer->size();
+                currentBuffer->resize(oldSize + numFramesAvailable);
 
-                // Process in batches to improve cache locality
-                for (size_t i = 0; i < numFramesAvailable; ++i) {
+                // Convert multi-channel to mono by averaging channels
+                for (UINT32 i = 0; i < numFramesAvailable; ++i) {
                     float sum = 0.0f;
                     for (unsigned int ch = 0; ch < numChannels; ++ch) {
                         sum += floatData[i * numChannels + ch];
                     }
-                    (*currentBuffer)[currentSize + i] = sum / static_cast<float>(numChannels);
+                    (*currentBuffer)[oldSize + i] = sum / static_cast<float>(numChannels);
                 }
+
+                // Keep buffer size reasonable (retain at most 5 seconds of audio)
+                const size_t maxBufferSize = 5 * sampleRate;
+                if (currentBuffer->size() > maxBufferSize) {
+                    currentBuffer->erase(currentBuffer->begin(),
+                        currentBuffer->begin() + (currentBuffer->size() - maxBufferSize));
+                }
+
+                // Track total samples processed
+                totalSamplesProcessed += numFramesAvailable;
             }
 
             hr = captureClient->ReleaseBuffer(numFramesAvailable);
@@ -264,6 +312,17 @@ void AudioCapture::captureLoop() {
             if (FAILED(hr)) {
                 break;
             }
+        }
+
+        // Periodic stats output (every 5 seconds)
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastPrintTime).count();
+
+        if (elapsed >= 5) {
+            std::lock_guard<std::mutex> lock(bufferMutex);
+            std::cout << "Buffer size: " << currentBuffer->size() << " samples, "
+                << "Total processed: " << totalSamplesProcessed << " samples" << std::endl;
+            lastPrintTime = now;
         }
     }
 }

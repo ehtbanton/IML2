@@ -8,6 +8,8 @@
 #include <mutex>
 #include <atomic>
 #include <chrono>
+#include <iostream>
+#include <iomanip>
 #include <fftw3.h>
 #include "AudioFingerprinter.h"
 #include "SpectrogramCache.h"
@@ -57,7 +59,6 @@ private:
     std::chrono::steady_clock::time_point last_stats_time;
 
     bool needsUpdate();
-    void printStats();
 
 public:
     AudioMatcher(const std::string& audio_file);
@@ -80,4 +81,7 @@ public:
 
     // Run self-test
     bool runSelfTest();
+
+    // Print statistics about the matching process - just declaration
+    void printStats();
 };

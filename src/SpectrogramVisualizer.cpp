@@ -28,25 +28,64 @@ SpectrogramBase::SpectrogramBase(sf::RenderWindow& win, const std::string& title
 }
 
 sf::Color SpectrogramBase::getColor(float magnitude) {
-    float db = 20 * std::log10(magnitude + 1e-9f);
-    float normalized = (db + 50) / 40.0f;
+    // Use a more aggressive normalization approach to ensure consistency
+    // First convert magnitude to decibels 
+    float db = 20.0f * std::log10(magnitude + 1e-9f);
+
+    // Apply standardized normalization with fixed parameters
+    // These parameters will be identical for both spectrograms
+    float normalized = (db + 70.0f) / 60.0f;
     normalized = std::max(0.0f, std::min(1.0f, normalized));
 
-    if (normalized < 0.4f) {
-        return sf::Color(0, 0, static_cast<sf::Uint8>(normalized * 255 / 0.4f));
+    // Apply gamma correction to enhance visibility of lower values
+    normalized = std::pow(normalized, 0.7f);
+
+    // Create a consistent color map with distinct color steps
+    // This makes debugging easier as colors clearly represent value ranges
+    if (normalized < 0.2f) {
+        // Dark Blue to Blue
+        float t = normalized / 0.2f;
+        return sf::Color(0, 0, static_cast<sf::Uint8>(64 + 191 * t));
+    }
+    else if (normalized < 0.4f) {
+        // Blue to Cyan
+        float t = (normalized - 0.2f) / 0.2f;
+        return sf::Color(0, static_cast<sf::Uint8>(255 * t), 255);
     }
     else if (normalized < 0.6f) {
-        float t = (normalized - 0.4f) * 5.0f;
-        return sf::Color(0, static_cast<sf::Uint8>(t * 255), 255);
+        // Cyan to Green
+        float t = (normalized - 0.4f) / 0.2f;
+        return sf::Color(0, 255, static_cast<sf::Uint8>(255 * (1.0f - t)));
     }
     else if (normalized < 0.8f) {
-        float t = (normalized - 0.6f) * 5.0f;
-        return sf::Color(static_cast<sf::Uint8>(t * 255), 255, static_cast<sf::Uint8>(255 * (1.0f - t)));
+        // Green to Yellow
+        float t = (normalized - 0.6f) / 0.2f;
+        return sf::Color(static_cast<sf::Uint8>(255 * t), 255, 0);
     }
     else {
-        float t = (normalized - 0.8f) * 5.0f;
+        // Yellow to Red
+        float t = (normalized - 0.8f) / 0.2f;
         return sf::Color(255, static_cast<sf::Uint8>(255 * (1.0f - t)), 0);
     }
+}
+
+std::vector<float> SpectrogramBase::normalizeSpectrum(const std::vector<float>& magnitudes) {
+    // Make a copy for modification
+    std::vector<float> normalized = magnitudes;
+
+    // Find maximum value for scaling 
+    float maxVal = 1e-9f;
+    for (float val : normalized) {
+        maxVal = std::max(maxVal, val);
+    }
+
+    // Apply normalization to ensure consistent range
+    float scaleFactor = 0.5f / maxVal;  // Target a reasonable peak value
+    for (float& val : normalized) {
+        val *= scaleFactor;
+    }
+
+    return normalized;
 }
 
 sf::Text SpectrogramBase::createText(const sf::Font& font, const std::string& content, unsigned int size, const sf::Vector2f& pos) {
@@ -62,25 +101,13 @@ sf::Text SpectrogramBase::createText(const sf::Font& font, const std::string& co
 void SpectrogramBase::updatePositionIndicator(double seconds, float confidence) {
     showPositionIndicator = true;
 
-    // Format timestamp as MM:SS
-    int minutes = static_cast<int>(seconds) / 60;
-    int secs = static_cast<int>(seconds) % 60;
-
-    std::stringstream ss;
-    ss << minutes << ":" << std::setfill('0') << std::setw(2) << secs;
-    positionText.setString(ss.str());
-
-    std::stringstream cs;
-    cs << "Confidence: " << std::fixed << std::setprecision(0) << (confidence * 100.0f) << "%";
-    confidenceText.setString(cs.str());
-
     // Position along X axis based on seconds into the song
     float xRatio = std::min(1.0f, static_cast<float>(seconds / 30.0f)); // Scale to 30 second window
     float xPos = spectrogramPosition.x + xRatio * spectrogramSize.x;
 
+    // Update position indicator line - just a vertical line with no text
     positionIndicator.setPosition(xPos, spectrogramPosition.y);
-    positionText.setPosition(xPos - 15.0f, spectrogramPosition.y - 20.0f);
-    confidenceText.setPosition(spectrogramPosition.x, spectrogramPosition.y - 40.0f);
+    positionIndicator.setSize(sf::Vector2f(2.0f, spectrogramSize.y));
 
     // Color based on confidence
     sf::Uint8 alpha = static_cast<sf::Uint8>(std::min(1.0f, confidence) * 255);
@@ -89,6 +116,11 @@ void SpectrogramBase::updatePositionIndicator(double seconds, float confidence) 
 
 void SpectrogramBase::setPosition(const sf::Vector2f& position) {
     spectrogramPosition = position;
+    handleResize();
+}
+
+void SpectrogramBase::setSize(const sf::Vector2f& size) {
+    spectrogramSize = size;
     handleResize();
 }
 
@@ -166,10 +198,7 @@ Spectrogram::~Spectrogram() {
 }
 
 void Spectrogram::initializeUI() {
-    float windowWidth = static_cast<float>(window.getSize().x);
-    float windowHeight = static_cast<float>(window.getSize().y);
-    spectrogramSize = sf::Vector2f(windowWidth * 0.45f, windowHeight * 0.45f);
-
+    // Use the spectrogramSize directly (no recalculation needed)
     spectrogramBackground.setSize(spectrogramSize);
     spectrogramBackground.setPosition(spectrogramPosition);
     spectrogramBackground.setFillColor(sf::Color(20, 20, 20));
@@ -182,17 +211,17 @@ void Spectrogram::initializeUI() {
     positionIndicator.setPosition(spectrogramPosition.x, spectrogramPosition.y);
 
     positionText = createText(font, "0:00", 14,
-        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y - 20.0f));
+        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y + spectrogramSize.y + 15.0f));
     positionText.setFillColor(sf::Color::Red);
 
     confidenceText = createText(font, "Confidence: 0%", 14,
-        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y - 40.0f));
+        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y + spectrogramSize.y + 15.0f));
     confidenceText.setFillColor(sf::Color::Red);
 
     // Title text
     titleText = createText(font, title, 16,
         sf::Vector2f(spectrogramPosition.x + spectrogramSize.x / 2 - 80,
-            spectrogramPosition.y - 60.0f));
+            spectrogramPosition.y - 30.0f));
     titleText.setFillColor(sf::Color::White);
 
     frequencyLabels.clear();
@@ -276,52 +305,71 @@ void Spectrogram::updateVertexPositions() {
 }
 
 void Spectrogram::processSamples(const std::vector<float>& samples) {
-    static std::vector<float> buffer;
-    buffer.insert(buffer.end(), samples.begin(), samples.end());
+    // Ignore empty or too small sample sets
+    if (samples.empty() || samples.size() < 512) {
+        return;
+    }
 
+    // Initialize time tracking on first sample
     if (first_sample) {
         start_time = std::chrono::steady_clock::now();
         first_sample = false;
     }
 
-    while (buffer.size() >= FFT_SIZE) {
-        // Process a frame using FFT
-        const float scale = 1.0f; // Reduced from 10.0f since we're normalizing elsewhere
+    // Use a static buffer to persist between calls for proper overlap
+    static std::vector<float> overlappingBuffer;
+
+    // Add new samples to our buffer
+    overlappingBuffer.insert(overlappingBuffer.end(), samples.begin(), samples.end());
+
+    // Process multiple frames if we have enough data
+    // Use 50% overlap between frames (FFT_SIZE = 1024, HOP_SIZE = 512)
+    while (overlappingBuffer.size() >= FFT_SIZE) {
+        // Apply window function
         for (size_t i = 0; i < FFT_SIZE; ++i) {
-            fft_in[i] = buffer[i] * window_function[i] * scale;
+            fft_in[i] = static_cast<double>(overlappingBuffer[i] * window_function[i]);
         }
 
+        // Execute FFT
         fftw_execute(fft_plan);
 
+        // Calculate magnitude spectrum
         std::vector<float> magnitudes(FFT_SIZE / 2);
         for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
             float real = static_cast<float>(fft_out[i][0]);
             float imag = static_cast<float>(fft_out[i][1]);
-            magnitudes[i] = std::sqrt(real * real + imag * imag) / (FFT_SIZE * 0.5f); // Adjusted normalization
+            // Normalize properly
+            magnitudes[i] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 0.5f);
         }
 
+        // Add this frame to history with proper thread safety
         {
             std::unique_lock<std::mutex> lock(history_mutex);
+
+            // Add the new frame to history
             magnitude_history.push_back(magnitudes);
 
-            if (sharedMem) {
-                memcpy(sharedMem->magnitudes, magnitudes.data(), sizeof(float) * (FFT_SIZE / 2));
-                sharedMem->timestamp = std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - start_time).count();
-                sharedMem->new_data_available = true;
-            }
-
+            // Calculate timestamp for this frame
             auto now = std::chrono::steady_clock::now();
             double seconds = std::chrono::duration<double>(now - start_time).count();
             column_timestamps.push_back(seconds);
 
+            // Update shared memory if available
+            if (sharedMem) {
+                memcpy(sharedMem->magnitudes, magnitudes.data(), sizeof(float) * (FFT_SIZE / 2));
+                sharedMem->timestamp = seconds;
+                sharedMem->new_data_available = true;
+            }
+
+            // Maintain fixed history size
             while (magnitude_history.size() > HISTORY_SIZE) {
                 magnitude_history.pop_front();
                 column_timestamps.pop_front();
             }
         }
 
-        buffer.erase(buffer.begin(), buffer.begin() + HOP_SIZE);
+        // Advance buffer by HOP_SIZE (not the full FFT_SIZE to maintain overlap)
+        overlappingBuffer.erase(overlappingBuffer.begin(), overlappingBuffer.begin() + HOP_SIZE);
     }
 }
 
@@ -344,13 +392,12 @@ void Spectrogram::draw() {
     }
     window.draw(vertices);
 
-    // Draw position indicator if active
+    // Draw only the position indicator line, not the text
     if (showPositionIndicator) {
         window.draw(positionIndicator);
-        window.draw(positionText);
-        window.draw(confidenceText);
     }
 
+    // Draw frequency and time labels
     for (const auto& label : frequencyLabels) {
         window.draw(label);
     }
@@ -385,11 +432,7 @@ StaticSpectrogram::StaticSpectrogram(sf::RenderWindow& win, const std::vector<st
 }
 
 void StaticSpectrogram::initializeUI() {
-    float winW = static_cast<float>(window.getSize().x);
-    float winH = static_cast<float>(window.getSize().y);
-
-    spectrogramSize = sf::Vector2f(winW * 0.45f, winH * 0.45f);
-
+    // Use the spectrogramSize directly
     spectrogramBackground.setSize(spectrogramSize);
     spectrogramBackground.setPosition(spectrogramPosition);
     spectrogramBackground.setFillColor(sf::Color(20, 20, 20));
@@ -402,17 +445,17 @@ void StaticSpectrogram::initializeUI() {
     positionIndicator.setPosition(spectrogramPosition.x, spectrogramPosition.y);
 
     positionText = createText(font, "0:00", 14,
-        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y - 20.0f));
+        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y + spectrogramSize.y + 15.0f));
     positionText.setFillColor(sf::Color::Red);
 
     confidenceText = createText(font, "Confidence: 0%", 14,
-        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y - 40.0f));
+        sf::Vector2f(spectrogramPosition.x, spectrogramPosition.y + spectrogramSize.y + 15.0f));
     confidenceText.setFillColor(sf::Color::Red);
 
     // Title text
     titleText = createText(font, title, 16,
         sf::Vector2f(spectrogramPosition.x + spectrogramSize.x / 2 - 80,
-            spectrogramPosition.y - 60.0f));
+            spectrogramPosition.y - 30.0f));
     titleText.setFillColor(sf::Color::White);
 
     frequencyLabels.clear();
@@ -493,24 +536,28 @@ void StaticSpectrogram::draw() {
 
     for (size_t x = 0; x < numFrames; ++x) {
         const auto& frame = spectrogramData[x];
-        for (size_t y = 0; y < bins && y < frame.size(); ++y) {
-            size_t idx = (x * bins + y) * 4;
-            sf::Color color = getColor(frame[y]);
-            vertices[idx].color = color;
-            vertices[idx + 1].color = color;
-            vertices[idx + 2].color = color;
-            vertices[idx + 3].color = color;
+        if (!frame.empty()) {
+            // Apply consistent normalization
+            std::vector<float> normalized = normalizeSpectrum(frame);
+
+            for (size_t y = 0; y < bins && y < normalized.size(); ++y) {
+                size_t idx = (x * bins + y) * 4;
+                sf::Color color = getColor(normalized[y]);
+                vertices[idx].color = color;
+                vertices[idx + 1].color = color;
+                vertices[idx + 2].color = color;
+                vertices[idx + 3].color = color;
+            }
         }
     }
     window.draw(vertices);
 
-    // Draw position indicator if active
+    // Draw only the position indicator line, not the text
     if (showPositionIndicator) {
         window.draw(positionIndicator);
-        window.draw(positionText);
-        window.draw(confidenceText);
     }
 
+    // Draw frequency and time labels
     for (const auto& label : frequencyLabels)
         window.draw(label);
     for (const auto& label : timeLabels)

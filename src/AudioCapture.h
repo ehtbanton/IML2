@@ -26,7 +26,6 @@ class AudioCapture {
 private:
     static const size_t BUFFER_SIZE = 2048;
     static const size_t TARGET_SAMPLES = 48000;
-    size_t batchSize;
 
     IMMDeviceEnumerator* deviceEnumerator;
     IMMDevice* device;
@@ -35,24 +34,30 @@ private:
     WAVEFORMATEX* pwfx;
 
     std::atomic<size_t> totalSamplesProcessed;
-    std::chrono::steady_clock::time_point lastPrintTime;
-    std::chrono::steady_clock::time_point batchStartTime;
 
-    std::thread captureThread;
-    std::atomic<bool> isRunning;
-    std::vector<float> buffer1;
-    std::vector<float> buffer2;
-    std::vector<float>* currentBuffer;
-    std::mutex bufferMutex;
+    std::thread captureThread;       // Thread for audio capture
+    std::thread mainProcessThread;   // Thread for main processing (every 0.5s)
+    std::thread offsetProcessThread; // Thread for offset processing (0.25s offset, then every 0.5s)
+
+    std::atomic<bool> isRunning;     // Main control flag
+    std::atomic<bool> mainThread;    // Control flag for main processing thread
+    std::atomic<bool> offsetThread;  // Control flag for offset processing thread
+
+    std::vector<float> buffer1;      // First audio buffer
+    std::vector<float> buffer2;      // Second audio buffer
+    std::vector<float>* currentBuffer; // Pointer to the active buffer
+
+    std::mutex bufferMutex;          // Mutex for thread-safe buffer access
     unsigned int sampleRate;
     unsigned int numChannels;
     Spectrogram* spectrogram;
 
-    std::vector<float> stretchAudio(const std::vector<float>& input);
     bool initializeDevice();
     void cleanupDevice();
-    void processBatch(std::vector<float>& batchBuffer);
-    void captureLoop();
+    void processBatch(const std::vector<float>& batchBuffer, bool isOffset);
+    void captureLoop();              // Function for the capture thread
+    void mainProcessLoop();          // Function for main processing thread
+    void offsetProcessLoop();        // Function for offset processing thread
 
 public:
     AudioCapture();
