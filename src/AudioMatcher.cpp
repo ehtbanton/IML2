@@ -12,6 +12,30 @@
 #include <cmath>
 #include <SFML/Audio.hpp>
 
+// Function to normalize audio to a consistent RMS level
+void normalizeAudio(std::vector<float>& samples, float targetRMS = 0.1f) {
+    // Calculate current RMS
+    float sumSquares = 0.0f;
+    for (const float& sample : samples) {
+        sumSquares += sample * sample;
+    }
+
+    if (samples.size() > 0) {
+        float currentRMS = std::sqrt(sumSquares / static_cast<float>(samples.size()));
+
+        // Avoid division by very small numbers
+        if (currentRMS > 1e-6f) {
+            // Calculate scaling factor
+            float scale = targetRMS / currentRMS;
+
+            // Apply scaling
+            for (float& sample : samples) {
+                sample *= scale;
+            }
+        }
+    }
+}
+
 // AudioAnalyzer implementations
 const std::vector<std::vector<float>>& AudioAnalyzer::getReferenceSpectogram() const {
     return reference_spectogram;
@@ -59,6 +83,7 @@ bool AudioAnalyzer::analyzeFile(const std::string& filepath) {
     std::vector<float> monoSamples;
     monoSamples.reserve(sampleCount / channels);
 
+    // Convert to mono and normalize to float range [-1.0, 1.0]
     for (size_t i = 0; i < sampleCount; i += channels) {
         float sum = 0.0f;
         for (unsigned int ch = 0; ch < channels; ++ch) {
@@ -67,8 +92,11 @@ bool AudioAnalyzer::analyzeFile(const std::string& filepath) {
         monoSamples.push_back(sum / (static_cast<float>(channels) * 32768.0f));
     }
 
+    // Normalize the entire audio file to a consistent RMS level
+    normalizeAudio(monoSamples);
+
     reference_spectogram.clear();
-    const float scale = 10.0f;
+    const float scale = 1.0f; // Reduced from 10.0f since we're already normalized
 
     // Process the entire audio file
     for (size_t i = 0; i + FFT_SIZE <= monoSamples.size(); i += HOP_SIZE) {
@@ -82,7 +110,7 @@ bool AudioAnalyzer::analyzeFile(const std::string& filepath) {
         for (size_t j = 0; j < FFT_SIZE / 2; ++j) {
             float real = static_cast<float>(fft_out[j][0]);
             float imag = static_cast<float>(fft_out[j][1]);
-            magnitudes[j] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 2.0f);
+            magnitudes[j] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 0.5f); // Adjusted normalization
         }
 
         reference_spectogram.push_back(magnitudes);

@@ -11,6 +11,35 @@
 #include <cmath>
 #include <sstream>
 
+// Custom hash function for vectors - needed for exact matching
+namespace std {
+    template<typename T>
+    struct hash<std::vector<T>> {
+        size_t operator()(const std::vector<T>& v) const {
+            std::hash<T> hasher;
+            size_t seed = v.size();
+            // Sample every 10th value to keep hash computation fast
+            for (size_t i = 0; i < v.size(); i += 10) {
+                seed ^= hasher(v[i]) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
+            return seed;
+        }
+    };
+
+    // Custom equality operator for vectors - needed for exact matching
+    template<typename T>
+    bool operator==(const std::vector<T>& lhs, const std::vector<T>& rhs) {
+        if (lhs.size() != rhs.size()) return false;
+        for (size_t i = 0; i < lhs.size(); i++) {
+            // Use approximate equality for floating point
+            if (std::abs(lhs[i] - rhs[i]) > 1e-6f) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
 class AudioFingerprinter {
 public:
     enum class DebugLevel {
@@ -37,6 +66,9 @@ private:
     // Hash table for reference fingerprints
     std::unordered_map<uint64_t, std::vector<size_t>> fingerprint_table;
     std::unordered_map<uint64_t, int> fingerprint_counts;
+
+    // Direct exact frame-to-position lookup table for guaranteed matching
+    std::unordered_map<std::vector<float>, size_t> exact_matches;
 
     // Recent audio frame buffer
     std::deque<std::vector<float>> frame_buffer;

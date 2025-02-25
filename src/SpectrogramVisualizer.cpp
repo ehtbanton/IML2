@@ -285,7 +285,8 @@ void Spectrogram::processSamples(const std::vector<float>& samples) {
     }
 
     while (buffer.size() >= FFT_SIZE) {
-        const float scale = 10.0f;
+        // Process a frame using FFT
+        const float scale = 1.0f; // Reduced from 10.0f since we're normalizing elsewhere
         for (size_t i = 0; i < FFT_SIZE; ++i) {
             fft_in[i] = buffer[i] * window_function[i] * scale;
         }
@@ -296,7 +297,7 @@ void Spectrogram::processSamples(const std::vector<float>& samples) {
         for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
             float real = static_cast<float>(fft_out[i][0]);
             float imag = static_cast<float>(fft_out[i][1]);
-            magnitudes[i] = std::sqrt(real * real + imag * imag) / (FFT_SIZE * 2.0f);
+            magnitudes[i] = std::sqrt(real * real + imag * imag) / (FFT_SIZE * 0.5f); // Adjusted normalization
         }
 
         {

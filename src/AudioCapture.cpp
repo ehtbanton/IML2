@@ -4,6 +4,30 @@
 
 #pragma comment(lib, "ole32.lib")
 
+// Function to normalize audio to a consistent RMS level
+void normalizeAudioBatch(std::vector<float>& samples, float targetRMS = 0.1f) {
+    if (samples.empty()) return;
+
+    // Calculate current RMS
+    float sumSquares = 0.0f;
+    for (const float& sample : samples) {
+        sumSquares += sample * sample;
+    }
+
+    float currentRMS = std::sqrt(sumSquares / static_cast<float>(samples.size()));
+
+    // Avoid division by very small numbers and only normalize if needed
+    if (currentRMS > 1e-6f) {
+        // Calculate scaling factor
+        float scale = targetRMS / currentRMS;
+
+        // Apply scaling
+        for (float& sample : samples) {
+            sample *= scale;
+        }
+    }
+}
+
 AudioCapture::AudioCapture()
     : deviceEnumerator(nullptr)
     , device(nullptr)
@@ -72,6 +96,8 @@ bool AudioCapture::start() {
 
     isRunning = true;
     captureThread = std::thread(&AudioCapture::captureLoop, this);
+
+    // Set thread priority to time critical for best audio performance
     SetThreadPriority(captureThread.native_handle(), THREAD_PRIORITY_TIME_CRITICAL);
     return true;
 }
@@ -120,7 +146,10 @@ void AudioCapture::cleanupDevice() {
 void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
     if (!spectrogram) return;
 
-    std::vector<float> processBuffer;
+    // Avoid unnecessary memory allocations
+    static std::vector<float> processBuffer;
+    processBuffer.clear();
+
     if (batchBuffer.size() >= TARGET_SAMPLES) {
         processBuffer.assign(batchBuffer.begin(), batchBuffer.begin() + TARGET_SAMPLES);
     }
@@ -129,20 +158,26 @@ void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
         processBuffer.resize(TARGET_SAMPLES, 0.0f);
     }
 
+    // Quickly determine if buffer is empty (silence)
     bool isCompletelyEmpty = true;
-    for (const float& sample : processBuffer) {
-        if (std::abs(sample) > 1e-6) {
+    for (size_t i = 0; i < processBuffer.size(); i += 16) { // Check every 16th sample
+        if (std::abs(processBuffer[i]) > 1e-6) {
             isCompletelyEmpty = false;
             break;
         }
     }
 
+    if (!isCompletelyEmpty) {
+        // Normalize the audio buffer to match the reference audio's level
+        normalizeAudioBatch(processBuffer);
+    }
+
     std::vector<float> processedBatch;
     if (isCompletelyEmpty && processBuffer.empty()) {
-        processedBatch = std::vector<float>(TARGET_SAMPLES, 0.0f);
+        processedBatch.resize(TARGET_SAMPLES, 0.0f);
     }
     else {
-        processedBatch = stretchAudio(processBuffer);
+        processedBatch = std::move(processBuffer); // Move instead of copy
     }
 
     spectrogram->processSamples(processedBatch);
@@ -157,7 +192,7 @@ void AudioCapture::captureLoop() {
         UINT32 packetLength = 0;
         HRESULT hr = captureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
-            std::cerr << "Failed to get next packet size" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
@@ -165,7 +200,7 @@ void AudioCapture::captureLoop() {
         double elapsedSeconds = std::chrono::duration<double>(now - batchStartTime).count();
 
         // If a second has passed, switch buffers and process the filled one
-        if (elapsedSeconds >= 1.0) {
+        if (elapsedSeconds >= 0.5) { // Process twice per second for better responsiveness
             // Switch buffers
             std::vector<float>* bufferToProcess = currentBuffer;
             currentBuffer = (currentBuffer == &buffer1) ? &buffer2 : &buffer1;
@@ -173,10 +208,12 @@ void AudioCapture::captureLoop() {
             currentBuffer->reserve(batchSize);
 
             // Process the filled buffer in a separate thread to avoid missing samples
-            std::thread processingThread([this, bufferToProcess]() {
-                processBatch(*bufferToProcess);
-                });
-            processingThread.detach();  // Let it run independently
+            if (bufferToProcess->size() > 100) { // Only process non-empty buffers
+                std::thread processingThread([this, bufferToProcess]() {
+                    processBatch(*bufferToProcess);
+                    });
+                processingThread.detach();  // Let it run independently
+            }
 
             batchStartTime = now;
         }
@@ -193,31 +230,38 @@ void AudioCapture::captureLoop() {
 
             hr = captureClient->GetBuffer(&data, &numFramesAvailable, &flags, nullptr, nullptr);
             if (FAILED(hr)) {
-                std::cerr << "Failed to get buffer" << std::endl;
                 break;
             }
 
             if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
                 float* floatData = reinterpret_cast<float*>(data);
 
+                // Ensure buffer has capacity to avoid reallocations
+                if (currentBuffer->size() + numFramesAvailable > currentBuffer->capacity()) {
+                    currentBuffer->reserve(currentBuffer->capacity() + batchSize);
+                }
+
+                // Optimize the inner loop
+                currentBuffer->resize(currentBuffer->size() + numFramesAvailable);
+                size_t currentSize = currentBuffer->size() - numFramesAvailable;
+
+                // Process in batches to improve cache locality
                 for (size_t i = 0; i < numFramesAvailable; ++i) {
                     float sum = 0.0f;
                     for (unsigned int ch = 0; ch < numChannels; ++ch) {
                         sum += floatData[i * numChannels + ch];
                     }
-                    currentBuffer->push_back(sum / static_cast<float>(numChannels));
+                    (*currentBuffer)[currentSize + i] = sum / static_cast<float>(numChannels);
                 }
             }
 
             hr = captureClient->ReleaseBuffer(numFramesAvailable);
             if (FAILED(hr)) {
-                std::cerr << "Failed to release buffer" << std::endl;
                 break;
             }
 
             hr = captureClient->GetNextPacketSize(&packetLength);
             if (FAILED(hr)) {
-                std::cerr << "Failed to get next packet size" << std::endl;
                 break;
             }
         }

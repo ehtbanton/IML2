@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <thread>
+#include <atomic>
 
 // Finally, project-specific headers
 #include "AudioFingerprinter.h"
@@ -22,13 +23,51 @@
 #include "TestHarness.h"
 #include "SpectrogramCache.h"
 
+// Global atomic flag for controlling background processing
+std::atomic<bool> g_processingActive(true);
+
+// Background processing thread function
+void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
+    StaticSpectrogram* staticSpectrogram,
+    std::atomic<double>* currentTimestamp,
+    std::atomic<float>* currentConfidence) {
+    sf::Clock updateTimer;
+
+    while (g_processingActive) {
+        // Only update at most every 100ms (10 times per second) to reduce CPU usage
+        if (updateTimer.getElapsedTime().asMilliseconds() >= 100) {
+            auto current_magnitudes = liveSpectrogram->getCurrentMagnitudes();
+
+            if (!current_magnitudes.empty()) {
+                auto matchResult = matcher->findMatchWithConfidence(current_magnitudes);
+
+                // Update atomic values that main thread can read
+                *currentTimestamp = matcher->getTimestamp(matchResult.first);
+                *currentConfidence = matchResult.second;
+            }
+
+            updateTimer.restart();
+        }
+
+        // Sleep to prevent CPU thrashing
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
 int main() {
+    // Set process priority to above normal
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+
     // Initialize FFTW threads for better performance
     fftw_init_threads();
     fftw_plan_with_nthreads(4);  // Use 4 threads for parallel execution
 
     // Create a single SFML window for both spectrograms
-    sf::RenderWindow window(sf::VideoMode(1280, 720), "Audio Position Matcher", sf::Style::Default | sf::Style::Resize);
+    sf::RenderWindow window(sf::VideoMode(1280, 720), "Audio Position Matcher",
+        sf::Style::Default);
+
+    // Use VSync for steady frame rate
+    window.setVerticalSyncEnabled(true);
     window.setFramerateLimit(60);
 
     // Get the path to the executable directory and determine the audio file path
@@ -61,7 +100,7 @@ int main() {
     // Initialize the live spectrogram
     Spectrogram liveSpectrogram(window, "Real-time Spectrogram (Live Capture)", livePos);
 
-    // Initialize the audio capture
+    // Initialize the audio capture with high priority
     AudioCapture capture;
     capture.setSpectrogram(&liveSpectrogram);
     if (!capture.start()) {
@@ -73,15 +112,13 @@ int main() {
     // Initialize test harness
     AudioMatchTestHarness testHarness(&matcher);
 
-    sf::Clock debugTimer;
-    sf::Clock testTimer;
-
-    // Create UI elements for test controls
+    // Create a font used for UI
     sf::Font font;
     if (!font.loadFromFile("C:\\Windows\\Fonts\\arial.ttf")) {
         std::cerr << "Failed to load font, using default" << std::endl;
     }
 
+    // Create UI elements for test controls
     sf::RectangleShape testButton(sf::Vector2f(120.0f, 40.0f));
     testButton.setPosition(580.0f, 670.0f);
     testButton.setFillColor(sf::Color(60, 60, 180));
@@ -97,16 +134,55 @@ int main() {
     statusText.setPosition(50.0f, 670.0f);
     statusText.setFillColor(sf::Color::White);
 
+    // Create atomic variables for thread communication
+    std::atomic<double> currentTimestamp(0.0);
+    std::atomic<float> currentConfidence(0.0f);
+
+    // Start background processing thread
+    std::thread processingThread(backgroundProcessing, &matcher, &liveSpectrogram,
+        &staticSpectrogram, &currentTimestamp, &currentConfidence);
+
+    // Set thread priority to time critical
+    SetThreadPriority(processingThread.native_handle(), THREAD_PRIORITY_HIGHEST);
+
     std::cout << "Application initialized successfully. Monitoring audio..." << std::endl;
+
+    // FPS counter variables
+    sf::Clock fpsClock;
+    int frameCount = 0;
+    float lastFpsUpdate = 0.0f;
+    float fps = 0.0f;
+    sf::Text fpsText("FPS: 0", font, 14);
+    fpsText.setPosition(10.0f, 10.0f);
+    fpsText.setFillColor(sf::Color::Yellow);
+
+    // Reduced update interval for UI updates to save CPU
+    sf::Clock uiUpdateClock;
+    bool needsUIUpdate = true;
+
+    // Test related variables
+    sf::Clock testTimer;
+    bool testActive = false;
 
     // Main loop: poll events and draw both spectrograms in one window
     while (window.isOpen()) {
+        // FPS calculation
+        frameCount++;
+        float currentTime = fpsClock.getElapsedTime().asSeconds();
+        if (currentTime - lastFpsUpdate >= 1.0f) {
+            fps = static_cast<float>(frameCount) / (currentTime - lastFpsUpdate);
+            frameCount = 0;
+            lastFpsUpdate = currentTime;
+            fpsText.setString("FPS: " + std::to_string(static_cast<int>(fps)));
+        }
+
         sf::Event event;
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed ||
                 (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape))
             {
                 window.close();
+                g_processingActive = false;
             }
             else if (event.type == sf::Event::Resized) {
                 sf::FloatRect visibleArea(0, 0, static_cast<float>(event.size.width), static_cast<float>(event.size.height));
@@ -121,6 +197,8 @@ int main() {
 
                 liveSpectrogram.handleResize();
                 staticSpectrogram.handleResize();
+
+                needsUIUpdate = true;
             }
             else if (event.type == sf::Event::MouseButtonPressed) {
                 if (event.mouseButton.button == sf::Mouse::Left) {
@@ -133,56 +211,67 @@ int main() {
                             testHarness.startTest();
                             testButtonText.setString("Stop Test");
                             statusText.setString("Test running...");
+                            testActive = true;
+                            testTimer.restart();
                         }
                         else {
                             testHarness.stopTest();
                             testButtonText.setString("Run Test");
                             statusText.setString("Test stopped");
+                            testActive = false;
                         }
+                        needsUIUpdate = true;
                     }
                 }
             }
         }
 
-        // Periodically update the position indicator
-        if (debugTimer.getElapsedTime().asSeconds() >= 0.5f) { // Update twice per second
-            std::pair<size_t, float> matchResult = { 0, 0.0f };
+        // Update UI only every 50ms (20 times per second) to improve performance
+        if (uiUpdateClock.getElapsedTime().asMilliseconds() >= 50 || needsUIUpdate) {
+            // Test mode or normal mode UI updates
+            if (testActive) {
+                if (testTimer.getElapsedTime().asSeconds() >= 0.1f) {
+                    auto matchResult = testHarness.processTestFrame();
 
-            if (testHarness.isRunningTest() && testTimer.getElapsedTime().asSeconds() >= 0.1f) {
-                // Use test signal instead of live audio
-                matchResult = testHarness.processTestFrame();
-                testTimer.restart();
+                    // Update status text
+                    std::stringstream ss;
+                    ss << "Test running... Confidence: " << std::fixed << std::setprecision(2)
+                        << (matchResult.second * 100.0f) << "%";
+                    statusText.setString(ss.str());
 
-                // Update status
-                std::stringstream ss;
-                ss << "Test running... Confidence: " << std::fixed << std::setprecision(2)
-                    << (matchResult.second * 100.0f) << "%";
-                statusText.setString(ss.str());
+                    // Update position indicators
+                    double timestamp = matcher.getTimestamp(matchResult.first);
+                    liveSpectrogram.updatePositionIndicator(timestamp, matchResult.second);
+                    staticSpectrogram.updatePositionIndicator(timestamp, matchResult.second);
+
+                    testTimer.restart();
+                }
             }
             else {
-                // Normal mode - use live audio
-                auto current_magnitudes = liveSpectrogram.getCurrentMagnitudes();
-                if (!current_magnitudes.empty()) {
-                    matchResult = matcher.findMatchWithConfidence(current_magnitudes);
+                // Use the values updated by background thread
+                double timestamp = currentTimestamp.load();
+                float confidence = currentConfidence.load();
 
-                    // Update status text in normal mode
+                // Only update UI if we have values
+                if (confidence > 0.0f || needsUIUpdate) {
+                    // Update position indicators
+                    liveSpectrogram.updatePositionIndicator(timestamp, confidence);
+                    staticSpectrogram.updatePositionIndicator(timestamp, confidence);
+
+                    // Update status text
                     std::stringstream ss;
                     ss << "Current position: " << std::fixed << std::setprecision(1)
-                        << matcher.getTimestamp(matchResult.first) << "s  Confidence: "
-                        << std::fixed << std::setprecision(0) << (matchResult.second * 100.0f) << "%";
+                        << timestamp << "s  Confidence: "
+                        << std::fixed << std::setprecision(0) << (confidence * 100.0f) << "%";
                     statusText.setString(ss.str());
                 }
             }
 
-            // Update position indicators on both spectrograms
-            double timestamp = matcher.getTimestamp(matchResult.first);
-            liveSpectrogram.updatePositionIndicator(timestamp, matchResult.second);
-            staticSpectrogram.updatePositionIndicator(timestamp, matchResult.second);
-
-            debugTimer.restart();
+            uiUpdateClock.restart();
+            needsUIUpdate = false;
         }
 
-        // Draw everything in one window
+        // Clear the window with a dark background
         window.clear(sf::Color(10, 10, 10));
 
         // Draw spectrograms
@@ -193,13 +282,18 @@ int main() {
         window.draw(testButton);
         window.draw(testButtonText);
         window.draw(statusText);
+        window.draw(fpsText);
 
+        // Display the window contents
         window.display();
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 
     // Clean up
+    g_processingActive = false;
+    if (processingThread.joinable()) {
+        processingThread.join();
+    }
+
     capture.stop();
     fftw_cleanup_threads();
 
