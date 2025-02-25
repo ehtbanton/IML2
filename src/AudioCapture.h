@@ -42,7 +42,7 @@ private:
     std::atomic<bool> isRunning;
     std::vector<float> buffer1;
     std::vector<float> buffer2;
-    std::vector<float>* currentBuffer;
+    std::vector<float>* currentBuffer;  // Points to either buffer1 or buffer2
     std::mutex bufferMutex;
     unsigned int sampleRate;
     unsigned int numChannels;

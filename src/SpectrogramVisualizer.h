@@ -52,6 +52,9 @@ protected:
     sf::Color getColor(float magnitude);
     sf::Text createText(const sf::Font& font, const std::string& content, unsigned int size, const sf::Vector2f& pos);
 
+    // Add normalization function to ensure consistency
+    std::vector<float> normalizeSpectrum(const std::vector<float>& magnitudes);
+
 public:
     SpectrogramBase(sf::RenderWindow& win, const std::string& title, const sf::Vector2f& position);
     virtual ~SpectrogramBase() {}
@@ -60,6 +63,7 @@ public:
     virtual void handleResize() = 0;
     virtual void updatePositionIndicator(double seconds, float confidence);
     void setPosition(const sf::Vector2f& position);
+    void setSize(const sf::Vector2f& size);
 };
 
 // Live spectrogram that processes real-time audio
@@ -103,6 +107,12 @@ public:
     void handleResize() override;
     double getTimeWindow() const;
     std::vector<float> getCurrentMagnitudes();
+    void resetState() {
+        std::unique_lock<std::mutex> lock(history_mutex);
+        magnitude_history.clear();
+        column_timestamps.clear();
+        first_sample = true;
+    }
 };
 
 // Static spectrogram that displays pre-processed audio
