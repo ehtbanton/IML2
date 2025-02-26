@@ -1,4 +1,5 @@
 #include "AudioCapture.h"
+// Include the full spectrogram definition before using it
 #include "SpectrogramVisualizer.h"
 #include <iostream>
 

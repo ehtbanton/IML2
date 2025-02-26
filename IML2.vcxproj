@@ -22,8 +22,10 @@
     <ClCompile Include="src\AudioCapture.cpp" />
     <ClCompile Include="src\AudioFingerprinter.cpp" />
     <ClCompile Include="src\AudioMatcher.cpp" />
+    <ClCompile Include="src\SpectrogramBase.cpp" />
+    <ClCompile Include="src\LiveSpectrogramImpl.cpp" />
     <ClCompile Include="src\SpectrogramCache.cpp" />
-    <ClCompile Include="src\SpectrogramVisualizer.cpp" />
+    <ClCompile Include="src\StaticSpectrogramImpl.cpp" />
     <ClCompile Include="src\TestHarness.cpp" />
     <ClCompile Include="src\___main.cpp" />
   </ItemGroup>
@@ -31,8 +33,11 @@
     <ClInclude Include="src\AudioCapture.h" />
     <ClInclude Include="src\AudioFingerprinter.h" />
     <ClInclude Include="src\AudioMatcher.h" />
+    <ClInclude Include="src\SpectrogramBase.h" />
+    <ClInclude Include="src\LiveSpectrogramImpl.h" />
     <ClInclude Include="src\SpectrogramCache.h" />
     <ClInclude Include="src\SpectrogramVisualizer.h" />
+    <ClInclude Include="src\StaticSpectrogramImpl.h" />
     <ClInclude Include="src\stdafx.h" />
     <ClInclude Include="src\TestHarness.h" />
   </ItemGroup>
