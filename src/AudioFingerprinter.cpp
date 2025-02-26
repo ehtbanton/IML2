@@ -82,15 +82,13 @@ void AudioFingerprinter::logDebug(const std::string& message, DebugLevel level) 
 }
 
 uint64_t AudioFingerprinter::createHash(int freq1, int freq2, int delta) {
-    // Create a simple but effective hash
-    // Use frequency bands with some quantization to be more robust to small variations
+    // Use extremely coarse frequency bands for much better robustness
+    // This enables proper matching despite slight frequency shifts in live audio
+    int band1 = freq1 / 4;  // Use very coarse bands - divide by 4
+    int band2 = freq2 / 4;
 
-    // Quantize frequency bands more coarsely for live matching robustness
-    int band1 = freq1 / 2;
-    int band2 = freq2 / 2;
-
-    // Quantize time delta lightly
-    int quantized_delta = (delta < 5) ? delta : (5 + (delta - 5) / 2);
+    // Use very coarse time delta quantization
+    int quantized_delta = delta <= 2 ? delta : (2 + (delta - 2) / 4);
 
     if (debug_level >= DebugLevel::Verbose) {
         std::stringstream ss;
@@ -124,18 +122,15 @@ std::vector<std::pair<int, float>> AudioFingerprinter::extractPeaks(const std::v
     }
     avg /= static_cast<float>(spectrum.size());
 
-    // Lower threshold for better peak detection in live audio
-    float threshold = std::max(0.00005f, avg * 0.6f);
+    // Use extremely low threshold for better peak detection in live audio
+    float threshold = std::max(0.000005f, avg * 0.3f);  // Much lower threshold than before
 
-    // Find local maxima above threshold with a wider window for robustness
-    for (int i = 3; i < static_cast<int>(spectrum.size()) - 3; i++) {
+    // Find local maxima with a wider window for robustness
+    for (int i = 4; i < static_cast<int>(spectrum.size()) - 4; i++) {
+        // Use a more relaxed peak detection algorithm - just 1 neighbor on each side
         if (spectrum[i] > threshold &&
             spectrum[i] >= spectrum[i - 1] &&
-            spectrum[i] >= spectrum[i - 2] &&
-            spectrum[i] >= spectrum[i - 3] &&
-            spectrum[i] >= spectrum[i + 1] &&
-            spectrum[i] >= spectrum[i + 2] &&
-            spectrum[i] >= spectrum[i + 3]) {
+            spectrum[i] >= spectrum[i + 1]) {
 
             // Store the peak
             peaks.push_back({ i, spectrum[i] });
@@ -146,8 +141,8 @@ std::vector<std::pair<int, float>> AudioFingerprinter::extractPeaks(const std::v
     std::sort(peaks.begin(), peaks.end(),
         [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    // Keep only top peaks, but use more peaks for better matching
-    const size_t MAX_PEAKS = 15;  // Increased from NUM_PEAKS
+    // Keep much more peaks for better matching
+    const size_t MAX_PEAKS = 25;  // More peaks = more hash points
     if (peaks.size() > MAX_PEAKS) {
         peaks.resize(MAX_PEAKS);
     }
@@ -257,7 +252,7 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
             return { it->second, 1.0f };  // Perfect confidence for exact match
         }
 
-        // If exact match fails, use approximate matching
+        // If exact match fails, use approximate matching with wide tolerance
         std::vector<std::pair<int, float>> peaks = extractPeaks(current_frame, match_counter);
         std::unordered_map<size_t, int> position_votes;
 
@@ -268,7 +263,8 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
 
             for (const auto& [f1, _] : peaks) {
                 for (const auto& [f2, __] : ref_peaks) {
-                    if (std::abs(f1 - f2) <= 3) { // Allow small differences
+                    // Use much wider tolerance for peak matching
+                    if (std::abs(f1 - f2) <= 8) { // Significantly increased from 3
                         matches++;
                     }
                 }
@@ -311,22 +307,22 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
         frame_energy += val * val;
     }
 
-    // Lower threshold for better sensitivity
-    const float LOWER_ENERGY_THRESHOLD = 0.00005f; // Lower than original ENERGY_THRESHOLD
+    // Use much lower energy threshold
+    const float LOWER_ENERGY_THRESHOLD = 0.000001f; // Extremely low
 
     if (frame_energy < LOWER_ENERGY_THRESHOLD) {
         silence_counter++;
         if (silence_counter > MAX_SILENCE_FRAMES) {
-            last_confidence *= 0.8f; // Decay confidence during extended silence
+            last_confidence *= 0.9f; // Decay confidence during extended silence
         }
-        return { last_match_position, last_confidence * 0.95f }; // Slight confidence decay during silence
+        return { last_match_position, last_confidence * 0.98f }; // Gentler confidence decay
     }
     else {
         silence_counter = 0;
     }
 
-    // Only do full matching every N frames to save CPU
-    if (match_counter % MATCH_INTERVAL != 0 && last_confidence > 0.1f) {
+    // Process more frequently
+    if (match_counter % MATCH_INTERVAL != 0 && last_confidence > 0.05f) {
         // Estimate how many reference frames to advance
         float hop_interval = static_cast<float>(HOP_SIZE) / 48000.0f; // Seconds per hop
         float frames_since_last_match = static_cast<float>(match_counter % MATCH_INTERVAL);
@@ -339,20 +335,19 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
             last_match_position += frames_to_advance;
         }
 
-        return { last_match_position, last_confidence * 0.99f }; // Slight decay for interpolated positions
+        return { last_match_position, last_confidence * 0.995f }; // Gentler decay
     }
 
     // Create histogram of position votes
     std::unordered_map<size_t, int> position_votes;
     int total_votes = 0;
 
-    // Process frames in buffer to generate fingerprints
-    // Use every 2nd frame to save CPU but still get good coverage
-    for (size_t i = 0; i < frame_buffer.size() - 1; i += 2) {
+    // Process more frames in buffer for more robust matching
+    for (size_t i = 0; i < frame_buffer.size() - 1; i += 1) { // Process every frame
         auto anchor_peaks = extractPeaks(frame_buffer[i], match_counter * 1000 + static_cast<int>(i));
 
-        // Look ahead for target frames
-        for (size_t dt = 1; dt <= std::min(static_cast<size_t>(20), frame_buffer.size() - i - 1); dt++) {
+        // Look ahead for target frames - use more delta combinations
+        for (size_t dt = 1; dt <= std::min(static_cast<size_t>(30), frame_buffer.size() - i - 1); dt++) {
             auto target_peaks = extractPeaks(frame_buffer[i + dt], match_counter * 1000 + static_cast<int>(i + dt));
 
             // Create fingerprints and query hash table
@@ -375,7 +370,7 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
 
     // No matching positions found
     if (position_votes.empty()) {
-        last_confidence *= 0.9f; // Decay confidence more rapidly when no matches found
+        last_confidence *= 0.9f; // Decay confidence
         return { last_match_position, last_confidence };
     }
 
@@ -383,19 +378,19 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
     size_t best_position = last_match_position;
     int best_votes = 0;
 
-    // Search with a wider window if we have a previous match with decent confidence
-    const size_t EXPECTED_MATCH_WINDOW = 200; // Frames - wider window for better robustness
+    // Use a much wider search window
+    const size_t EXPECTED_MATCH_WINDOW = 500; // Much wider window
 
     size_t search_start = 0;
     size_t search_end = reference_spectrogram.size();
 
-    if (last_confidence > 0.3f) {
+    if (last_confidence > 0.1f) {
         // Calculate expected position based on time elapsed
         float expected_advance = static_cast<float>(match_counter - last_match_counter) * 0.5f;
         size_t expected_pos = std::min(last_match_position + static_cast<size_t>(expected_advance),
             reference_spectrogram.size() - 1);
 
-        // Search around expected position
+        // Search around expected position with wide window
         search_start = (expected_pos > EXPECTED_MATCH_WINDOW) ? expected_pos - EXPECTED_MATCH_WINDOW : 0;
         search_end = std::min(expected_pos + EXPECTED_MATCH_WINDOW, reference_spectrogram.size());
     }
@@ -408,42 +403,40 @@ std::pair<size_t, float> AudioFingerprinter::findMatchWithConfidence(const std::
         }
     }
 
-    // Calculate confidence score
+    // Calculate confidence score with more aggressive scaling
     float best_confidence = 0.0f;
     if (total_votes > 0) {
         best_confidence = static_cast<float>(best_votes) / static_cast<float>(total_votes);
-        best_confidence = std::min(1.0f, best_confidence * 8.0f); // Scale up for better visibility
+        best_confidence = std::min(1.0f, best_confidence * 12.0f); // Scale up more aggressively
     }
 
-    // Apply temporal consistency for better tracking
+    // Apply more tolerant temporal consistency
     if (last_confidence > 0.0f) {
         // Check if the new position is consistent with the previous position
         float expected_advance = static_cast<float>(match_counter - last_match_counter) * 0.5f;
         float actual_advance = static_cast<float>(best_position) - static_cast<float>(last_match_position);
 
-        // If the advance is very different, reduce confidence
-        if (std::abs(actual_advance - expected_advance) > expected_advance * 0.8f &&
-            std::abs(actual_advance - expected_advance) > 20.0f) {
-            best_confidence *= 0.7f;
+        // Much more tolerant of position jumps
+        if (std::abs(actual_advance - expected_advance) > expected_advance * 2.0f &&
+            std::abs(actual_advance - expected_advance) > 100.0f) {
+            best_confidence *= 0.9f; // Less reduction
         }
 
         // Blend with previous confidence for more stable tracking
         best_confidence = best_confidence * 0.7f + last_confidence * 0.3f;
     }
 
-    // Update state if confidence is sufficient
-    const float MIN_ACCEPT_CONFIDENCE_ADJUSTED = 0.25f; // Lower threshold for acceptance
-
-    if (best_confidence > MIN_ACCEPT_CONFIDENCE_ADJUSTED ||
+    // Update state with much lower confidence threshold
+    if (best_confidence > MIN_ACCEPT_CONFIDENCE ||
         (best_confidence > MIN_CONTINUE_CONFIDENCE &&
-            std::abs(static_cast<int>(best_position) - static_cast<int>(last_match_position)) < 30)) {
+            std::abs(static_cast<int>(best_position) - static_cast<int>(last_match_position)) < 50)) {
 
         last_match_position = best_position;
         last_confidence = best_confidence;
         last_match_counter = match_counter;
     }
     else {
-        // Decay confidence if we couldn't find a good match
+        // Gentler confidence decay
         last_confidence *= 0.95f;
     }
 

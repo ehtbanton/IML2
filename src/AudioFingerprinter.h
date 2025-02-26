@@ -53,15 +53,15 @@ private:
     // Parameters for fingerprinting
     static const size_t FFT_SIZE = 1024;
     static const size_t HOP_SIZE = 512;
-    static const size_t NUM_PEAKS = 6;
+    static const size_t NUM_PEAKS = 10;  // Increased from 6
     static const size_t MAX_TIME_DELTA = 100;
-    static const size_t HISTORY_SIZE = 10 * 48000 / HOP_SIZE; // ~10 seconds of audio
+    static const size_t HISTORY_SIZE = 15 * 48000 / HOP_SIZE; // ~15 seconds of audio (increased from 10 seconds)
     static const size_t MIN_BUFFER_FOR_MATCH = MAX_TIME_DELTA + 10;
-    static const size_t MATCH_INTERVAL = 5; // Only perform full matching every N frames
+    static const size_t MATCH_INTERVAL = 3; // Only perform full matching every N frames (reduced from 5)
     static const size_t MAX_SILENCE_FRAMES = 10;
-    static constexpr float ENERGY_THRESHOLD = 0.0001f;
-    static constexpr float MIN_ACCEPT_CONFIDENCE = 0.3f;
-    static constexpr float MIN_CONTINUE_CONFIDENCE = 0.1f;
+    static constexpr float ENERGY_THRESHOLD = 0.00005f;
+    static constexpr float MIN_ACCEPT_CONFIDENCE = 0.15f;  // Significantly reduced from 0.3f
+    static constexpr float MIN_CONTINUE_CONFIDENCE = 0.05f; // Reduced from 0.1f
 
     // Hash table for reference fingerprints
     std::unordered_map<uint64_t, std::vector<size_t>> fingerprint_table;

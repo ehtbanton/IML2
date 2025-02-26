@@ -99,9 +99,29 @@ std::vector<float> SpectrogramBase::normalizeSpectrum(const std::vector<float>& 
     // Make a copy for modification
     std::vector<float> normalized = magnitudes;
 
+    // First normalize the overall energy to ensure consistency between live and static
+    float totalEnergy = 0.0f;
+    for (float val : normalized) {
+        totalEnergy += val * val;
+    }
+
+    // Calculate RMS value
+    float rms = std::sqrt(totalEnergy / normalized.size());
+
+    // Target RMS level
+    const float TARGET_RMS = 0.1f;
+
+    // Apply scaling if needed
+    if (rms > 1e-6f) {
+        float scaleFactor = TARGET_RMS / rms;
+        for (float& val : normalized) {
+            val *= scaleFactor;
+        }
+    }
+
     // Apply consistent amplification - use the same value for BOTH spectrograms
     // This increases the values to make colors more vibrant
-    const float AMPLIFICATION = 5.0f; // Higher value = more bright colors
+    const float AMPLIFICATION = 6.0f; // CHANGE: Increased from 5.0f for better visibility
 
     for (float& val : normalized) {
         // Amplify the values to match the static spectrogram's intensity

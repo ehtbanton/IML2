@@ -187,7 +187,6 @@ void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
     }
 }
 
-// Updated AudioCapture captureLoop for improved silence handling and update rate
 void AudioCapture::captureLoop() {
     batchStartTime = std::chrono::steady_clock::now();
     lastPrintTime = batchStartTime;
@@ -211,6 +210,9 @@ void AudioCapture::captureLoop() {
 
         // Process data every 0.1 seconds for faster updates
         if (elapsedSeconds >= 0.1 && localCaptureBuffer.size() >= FFT_SIZE) {
+            // CHANGE: Apply normalization to every batch before processing
+            normalizeAudioBatch(localCaptureBuffer, 0.15f);
+
             processBatch(localCaptureBuffer);
 
             // Keep a small overlap for continuous processing

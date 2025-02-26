@@ -58,7 +58,12 @@ private:
     std::atomic<float> average_confidence;
     std::chrono::steady_clock::time_point last_stats_time;
 
+    // Timing offset compensation
+    float referenceTimeOffset;
+    bool timeOffsetCalibrated;
+
     bool needsUpdate();
+    void preprocessStaticSpectrogram();
 
 public:
     AudioMatcher(const std::string& audio_file);
@@ -78,6 +83,9 @@ public:
 
     // Convert frame position to time in seconds
     double getTimestamp(size_t position) const;
+
+    // Set a time offset to compensate for any capturing delays
+    void setTimeOffset(float offsetSeconds);
 
     // Run self-test
     bool runSelfTest();

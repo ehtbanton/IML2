@@ -131,6 +131,8 @@ AudioMatcher::AudioMatcher(const std::string& audio_file)
     , match_hits(0)
     , average_confidence(0.0f)
     , last_stats_time(std::chrono::steady_clock::now())
+    , referenceTimeOffset(0.0f)
+    , timeOffsetCalibrated(false)
 {
     // Create cache object
     cache = new SpectrogramCache();
@@ -180,6 +182,36 @@ bool AudioMatcher::needsUpdate() {
     return audioTime.QuadPart > cacheTime.QuadPart;
 }
 
+void AudioMatcher::preprocessStaticSpectrogram() {
+    // Apply additional scaling to the static spectrogram
+    // for better matching with live audio
+    for (auto& frame : cache->spectogram_data) {
+        // Apply mild lowpass filtering (smoothing) to reduce noise sensitivity
+        std::vector<float> smoothed(frame.size());
+        for (size_t i = 2; i < frame.size() - 2; i++) {
+            // Simple 5-point average
+            smoothed[i] = (frame[i - 2] + frame[i - 1] + frame[i] + frame[i + 1] + frame[i + 2]) / 5.0f;
+        }
+
+        // Copy the smoothed values back
+        for (size_t i = 2; i < frame.size() - 2; i++) {
+            frame[i] = smoothed[i];
+        }
+
+        // Amplify certain frequency ranges that help with matching
+        for (size_t i = 0; i < frame.size(); i++) {
+            float freqRatio = static_cast<float>(i) / frame.size();
+
+            // Boost mid-range frequencies (most useful for matching)
+            if (freqRatio > 0.1f && freqRatio < 0.6f) {
+                frame[i] *= 1.2f;
+            }
+        }
+    }
+
+    std::cout << "Static spectrogram pre-processed for better matching" << std::endl;
+}
+
 bool AudioMatcher::initialize() {
     if (is_initialized) return true;
 
@@ -220,6 +252,9 @@ bool AudioMatcher::initialize() {
             return initialize();
         }
     }
+
+    // Pre-process the static spectrogram to match live audio better
+    preprocessStaticSpectrogram();
 
     // Initialize the fingerprinter with the spectral data
     fingerprinter.setReferenceData(cache->spectogram_data);
@@ -270,7 +305,15 @@ size_t AudioMatcher::findMatch(const std::vector<float>& current_magnitudes) {
 }
 
 double AudioMatcher::getTimestamp(size_t position) const {
-    return position * (static_cast<double>(512) / 48000.0);  // HOP_SIZE / SAMPLE_RATE
+    double baseTime = position * (static_cast<double>(512) / 48000.0);  // HOP_SIZE / SAMPLE_RATE
+    // Apply the offset compensation if calibrated
+    return timeOffsetCalibrated ? baseTime + referenceTimeOffset : baseTime;
+}
+
+void AudioMatcher::setTimeOffset(float offsetSeconds) {
+    referenceTimeOffset = offsetSeconds;
+    timeOffsetCalibrated = true;
+    std::cout << "Reference time offset set to " << offsetSeconds << " seconds" << std::endl;
 }
 
 bool AudioMatcher::runSelfTest() {

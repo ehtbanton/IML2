@@ -27,6 +27,80 @@
 // Global atomic flag for controlling background processing
 std::atomic<bool> g_processingActive(true);
 
+// Helper function for audio device setup
+HRESULT SetupAudioDeviceExclusiveMode() {
+    IMMDeviceEnumerator* pEnumerator = NULL;
+    IMMDevice* pDevice = NULL;
+    IAudioClient* pAudioClient = NULL;
+    HRESULT hr = S_OK;
+
+    // Initialize COM
+    hr = CoInitialize(NULL);
+    if (FAILED(hr)) return hr;
+
+    // Create device enumerator
+    hr = CoCreateInstance(
+        __uuidof(MMDeviceEnumerator),
+        NULL,
+        CLSCTX_ALL,
+        __uuidof(IMMDeviceEnumerator),
+        (void**)&pEnumerator
+    );
+    if (FAILED(hr)) {
+        CoUninitialize();
+        return hr;
+    }
+
+    // Get default device
+    hr = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+    if (FAILED(hr)) {
+        pEnumerator->Release();
+        CoUninitialize();
+        return hr;
+    }
+
+    // Activate audio client
+    hr = pDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void**)&pAudioClient);
+    if (FAILED(hr)) {
+        pDevice->Release();
+        pEnumerator->Release();
+        CoUninitialize();
+        return hr;
+    }
+
+    // Try to set the audio format to match the reference audio
+    WAVEFORMATEX* pwfx = NULL;
+    hr = pAudioClient->GetMixFormat(&pwfx);
+    if (SUCCEEDED(hr)) {
+        // Set to 48kHz which matches our reference
+        pwfx->nSamplesPerSec = 48000;
+        pwfx->nAvgBytesPerSec = pwfx->nSamplesPerSec * pwfx->nBlockAlign;
+
+        // Try to initialize in exclusive mode first
+        hr = pAudioClient->Initialize(
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            0, 0, pwfx, NULL);
+
+        if (FAILED(hr)) {
+            // Fall back to shared mode with format changes
+            hr = pAudioClient->Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                0, 0, pwfx, NULL);
+        }
+
+        CoTaskMemFree(pwfx);
+    }
+
+    // Cleanup
+    pAudioClient->Release();
+    pDevice->Release();
+    pEnumerator->Release();
+
+    return hr;
+}
+
 // Optimize window settings for better responsiveness
 void optimizeWindowSettings(sf::RenderWindow& window) {
     // Remove frame rate limiting to allow maximum responsiveness
@@ -45,15 +119,25 @@ void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
     sf::Clock updateTimer;
     sf::Clock statsTimer;
     int frameCounter = 0;
+    int stableFrameCounter = 0;
+    size_t lastPosition = 0;
+
+    // Set a time offset to compensate for audio capture delay
+    matcher->setTimeOffset(-0.2f);  // Small negative offset to compensate for typical capture delay
 
     // Give the capture system time to initialize
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     std::cout << "Background processing started" << std::endl;
 
+    // Add a consistent processing rate timer
+    sf::Clock processingRateTimer;
+    const float TARGET_PROCESSING_RATE_MS = 20.0f; // 50 Hz processing rate
+
     while (g_processingActive) {
-        // Update more frequently (every 30ms instead of every frame)
-        if (updateTimer.getElapsedTime().asMilliseconds() >= 30) {
+        // Process at a consistent rate
+        float elapsedMs = processingRateTimer.getElapsedTime().asMilliseconds();
+        if (elapsedMs >= TARGET_PROCESSING_RATE_MS) {
             auto current_magnitudes = liveSpectrogram->getCurrentMagnitudes();
 
             if (!current_magnitudes.empty()) {
@@ -62,19 +146,31 @@ void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
                 // Process in a way that doesn't block the main thread for too long
                 auto matchResult = matcher->findMatchWithConfidence(current_magnitudes);
 
-                // Update atomic values that main thread can read
-                *currentTimestamp = matcher->getTimestamp(matchResult.first);
-                *currentConfidence = matchResult.second;
+                // Detect stability for better UI updates
+                if (lastPosition == matchResult.first && matchResult.second > 0.2f) {
+                    stableFrameCounter++;
+                }
+                else {
+                    stableFrameCounter = 0;
+                }
+                lastPosition = matchResult.first;
+
+                // Only update UI when we have a stable match for a few frames
+                if (stableFrameCounter > 3 || frameCounter % 10 == 0) {
+                    // Update atomic values that main thread can read
+                    *currentTimestamp = matcher->getTimestamp(matchResult.first);
+                    *currentConfidence = matchResult.second;
+                }
 
                 // Print diagnostics less frequently to reduce console output
                 if (frameCounter % 30 == 0) {
-                    std::cout << "Current match position: " << *currentTimestamp
-                        << "s, confidence: " << (*currentConfidence * 100.0f)
+                    std::cout << "Current match position: " << matcher->getTimestamp(matchResult.first)
+                        << "s, confidence: " << (matchResult.second * 100.0f)
                         << "%, frame: " << frameCounter << std::endl;
                 }
             }
 
-            updateTimer.restart();
+            processingRateTimer.restart();
         }
 
         // Print stats less frequently to reduce CPU usage
@@ -84,7 +180,7 @@ void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
         }
 
         // Sleep more to allow the main thread to process
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     std::cout << "Background processing stopped" << std::endl;
@@ -166,6 +262,12 @@ int main() {
     // Set spectrogram positions and sizes
     liveSpectrogram.setSize(sf::Vector2f(spectrogramWidth, spectrogramHeight));
     staticSpectrogram.setSize(sf::Vector2f(spectrogramWidth, spectrogramHeight));
+
+    // Set the audio device to exclusive mode and highest sample quality
+    HRESULT hr = SetupAudioDeviceExclusiveMode();
+    if (FAILED(hr)) {
+        std::cerr << "Failed to set audio device to exclusive mode, continuing with shared mode" << std::endl;
+    }
 
     // Initialize the audio capture with high priority
     std::cout << "Starting audio capture..." << std::endl;
