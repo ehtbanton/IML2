@@ -35,21 +35,17 @@ AudioCapture::AudioCapture()
     , captureClient(nullptr)
     , pwfx(nullptr)
     , isRunning(false)
-    , buffer1()
-    , buffer2()
-    , currentBuffer(nullptr)
     , sampleRate(48000)
     , numChannels(2)
     , spectrogram(nullptr)
-    , batchSize(48000)
     , totalSamplesProcessed(0)
+    , batchSize(48000)
 {
     HRESULT hr = CoInitialize(nullptr);
     if (SUCCEEDED(hr)) {
         initializeDevice();
     }
-    buffer1.reserve(batchSize);
-    buffer2.reserve(batchSize);
+    captureBuffer.reserve(batchSize);
 }
 
 AudioCapture::~AudioCapture() {
@@ -94,6 +90,13 @@ bool AudioCapture::start() {
     numChannels = pwfx->nChannels;
     batchSize = sampleRate;
 
+    // Clear capture buffer
+    {
+        std::lock_guard<std::mutex> lock(bufferMutex);
+        captureBuffer.clear();
+        captureBuffer.reserve(batchSize);
+    }
+
     isRunning = true;
     captureThread = std::thread(&AudioCapture::captureLoop, this);
 
@@ -110,15 +113,6 @@ void AudioCapture::stop() {
     if (audioClient) {
         audioClient->Stop();
     }
-}
-
-std::vector<float> AudioCapture::stretchAudio(const std::vector<float>& input) {
-    std::vector<float> output(TARGET_SAMPLES, 0.0f);
-    size_t samplesToCopy = std::min(input.size(), TARGET_SAMPLES);
-    if (samplesToCopy > 0) {
-        std::copy_n(input.begin(), samplesToCopy, output.begin());
-    }
-    return output;
 }
 
 bool AudioCapture::initializeDevice() {
@@ -143,54 +137,60 @@ void AudioCapture::cleanupDevice() {
     if (pwfx) { CoTaskMemFree(pwfx); pwfx = nullptr; }
 }
 
+// CRITICAL FIX: Simplified AudioCapture processing to avoid freezing
 void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
-    if (!spectrogram) return;
+    if (!spectrogram || batchBuffer.empty()) return;
 
-    // CRITICAL TIME FIX: Process only HALF the samples (24,000 = 0.5 seconds)
-    // This counteracts the spectrogram's internal time stretching
-    static const size_t CORRECTED_SAMPLES = TARGET_SAMPLES / 2;
+    // Process in smaller chunks to avoid blocking too long
+    static const size_t MAX_FRAMES_PER_BATCH = 10;
+    static const size_t STEP_SIZE = FFT_SIZE / 2;  // 50% overlap
 
-    // Take samples from the beginning of the buffer, not the end
-    // This is safer and avoids vector subscript out of range errors
-    std::vector<float> processBuffer;
-    if (batchBuffer.size() >= CORRECTED_SAMPLES) {
-        // Take the first CORRECTED_SAMPLES samples - this is different from our problematic approach!
-        processBuffer.assign(batchBuffer.begin(), batchBuffer.begin() + CORRECTED_SAMPLES);
-    }
-    else {
-        // If we have fewer samples than needed, pad with zeros
-        processBuffer = batchBuffer;
-        processBuffer.resize(CORRECTED_SAMPLES, 0.0f);
-    }
+    // Limit the number of frames we process to avoid freezing
+    size_t framesToProcess = std::min(
+        (batchBuffer.size() - FFT_SIZE) / STEP_SIZE + 1,
+        MAX_FRAMES_PER_BATCH
+    );
 
-    // Check if buffer contains actual audio or is just silence
-    bool isCompletelyEmpty = true;
-    for (size_t i = 0; i < processBuffer.size(); i += 16) {
-        if (i < processBuffer.size() && std::abs(processBuffer[i]) > 1e-6) {
-            isCompletelyEmpty = false;
-            break;
+    for (size_t i = 0; i < framesToProcess; i++) {
+        size_t startPos = i * STEP_SIZE;
+        if (startPos + FFT_SIZE > batchBuffer.size()) break;
+
+        // Extract frame
+        std::vector<float> frame(FFT_SIZE);
+        for (size_t j = 0; j < FFT_SIZE; j++) {
+            frame[j] = batchBuffer[startPos + j];
         }
-    }
 
-    if (!isCompletelyEmpty) {
-        // Normalize the audio buffer to match the reference audio's level
-        normalizeAudioBatch(processBuffer);
-    }
+        // Normalize if not empty
+        bool isEmpty = true;
+        for (float sample : frame) {
+            if (std::abs(sample) > 1e-6f) {
+                isEmpty = false;
+                break;
+            }
+        }
 
-    // Send half a second of audio to the spectrogram to process
-    spectrogram->processSamples(processBuffer);
+        if (!isEmpty) {
+            normalizeAudioBatch(frame);
+        }
+
+        // Process the frame (this will be done in the audio thread)
+        spectrogram->processSamples(frame);
+    }
 }
 
+// CRITICAL FIX: Simplified captureLoop to prevent excessive processing
 void AudioCapture::captureLoop() {
     batchStartTime = std::chrono::steady_clock::now();
-    lastPrintTime = batchStartTime;
-    currentBuffer = &buffer1;  // Start with buffer1
+
+    // Use simpler capture buffer handling
+    std::vector<float> captureBuffer;
+    captureBuffer.reserve(batchSize);
 
     while (isRunning) {
         UINT32 packetLength = 0;
         HRESULT hr = captureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
-            std::cerr << "Failed to get next packet size" << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
@@ -198,27 +198,14 @@ void AudioCapture::captureLoop() {
         auto now = std::chrono::steady_clock::now();
         double elapsedSeconds = std::chrono::duration<double>(now - batchStartTime).count();
 
-        // If a second has passed, switch buffers and process the filled one
-        if (elapsedSeconds >= 0.5) { // Process every 0.5 seconds for better time accuracy
-            // Switch buffers
-            std::vector<float>* bufferToProcess = currentBuffer;
-            currentBuffer = (currentBuffer == &buffer1) ? &buffer2 : &buffer1;
-            currentBuffer->clear(); // IMPORTANT: Clear the new buffer before use
-            currentBuffer->reserve(batchSize);
+        // Process data every 0.1 seconds (faster but not too frequent)
+        if (elapsedSeconds >= 0.1 && captureBuffer.size() >= FFT_SIZE) {
+            processBatch(captureBuffer);
 
-            // Process the filled buffer in a separate thread to avoid missing samples
-            if (!bufferToProcess->empty()) {
-                try {
-                    std::thread processingThread([this, bufferToProcess]() {
-                        processBatch(*bufferToProcess);
-                        });
-                    processingThread.detach();  // Let it run independently
-                }
-                catch (const std::exception& e) {
-                    std::cerr << "Failed to create processing thread: " << e.what() << std::endl;
-                }
-            }
-
+            // Keep a small overlap for continuous processing
+            size_t overlapSize = std::min(FFT_SIZE, captureBuffer.size());
+            std::vector<float> overlap(captureBuffer.end() - overlapSize, captureBuffer.end());
+            captureBuffer = overlap;
             batchStartTime = now;
         }
 
@@ -227,47 +214,37 @@ void AudioCapture::captureLoop() {
             continue;
         }
 
+        // Process audio packets
         while (packetLength > 0) {
             BYTE* data;
             UINT32 numFramesAvailable;
             DWORD flags;
 
             hr = captureClient->GetBuffer(&data, &numFramesAvailable, &flags, nullptr, nullptr);
-            if (FAILED(hr)) {
-                std::cerr << "Failed to get buffer" << std::endl;
-                break;
-            }
+            if (FAILED(hr)) break;
 
             if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
                 float* floatData = reinterpret_cast<float*>(data);
 
-                // Ensure we have space in the buffer
-                if (currentBuffer->size() + numFramesAvailable > currentBuffer->capacity()) {
-                    currentBuffer->reserve(currentBuffer->capacity() + batchSize);
-                }
+                // Add samples to buffer (simplified)
+                size_t startIdx = captureBuffer.size();
+                captureBuffer.resize(startIdx + numFramesAvailable);
 
-                // Add samples to current buffer with bounds checking
                 for (size_t i = 0; i < numFramesAvailable; ++i) {
+                    // Mix to mono
                     float sum = 0.0f;
                     for (unsigned int ch = 0; ch < numChannels && (i * numChannels + ch) < (numFramesAvailable * numChannels); ++ch) {
                         sum += floatData[i * numChannels + ch];
                     }
-                    float monoSample = sum / static_cast<float>(numChannels);
-                    currentBuffer->push_back(monoSample);
+                    captureBuffer[startIdx + i] = sum / static_cast<float>(numChannels);
                 }
             }
 
             hr = captureClient->ReleaseBuffer(numFramesAvailable);
-            if (FAILED(hr)) {
-                std::cerr << "Failed to release buffer" << std::endl;
-                break;
-            }
+            if (FAILED(hr)) break;
 
             hr = captureClient->GetNextPacketSize(&packetLength);
-            if (FAILED(hr)) {
-                std::cerr << "Failed to get next packet size" << std::endl;
-                break;
-            }
+            if (FAILED(hr)) break;
         }
     }
 }

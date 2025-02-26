@@ -26,6 +26,7 @@ class AudioCapture {
 private:
     static const size_t BUFFER_SIZE = 2048;
     static const size_t TARGET_SAMPLES = 48000;
+    static const size_t FFT_SIZE = 1024;
     size_t batchSize;
 
     IMMDeviceEnumerator* deviceEnumerator;
@@ -40,15 +41,12 @@ private:
 
     std::thread captureThread;
     std::atomic<bool> isRunning;
-    std::vector<float> buffer1;
-    std::vector<float> buffer2;
-    std::vector<float>* currentBuffer;  // Points to either buffer1 or buffer2
+    std::vector<float> captureBuffer;
     std::mutex bufferMutex;
     unsigned int sampleRate;
     unsigned int numChannels;
     Spectrogram* spectrogram;
 
-    std::vector<float> stretchAudio(const std::vector<float>& input);
     bool initializeDevice();
     void cleanupDevice();
     void processBatch(std::vector<float>& batchBuffer);

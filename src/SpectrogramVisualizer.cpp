@@ -163,8 +163,19 @@ Spectrogram::Spectrogram(sf::RenderWindow& win, const std::string& titleText, co
     }
 
     initializeFFT();
-    vertices.resize(HISTORY_SIZE * (FFT_SIZE / 2) * 4);
+
+    // Initialize empty vertex array - don't set the size yet
+    vertices.setPrimitiveType(sf::Quads);
+
+    // Initialize UI elements
+    spectrogramSize = sf::Vector2f(800, 600); // Default size, will be updated later
     initializeUI();
+
+    // Only resize vertex array once we know the size
+    size_t totalVertices = HISTORY_SIZE * (FFT_SIZE / 2) * 4;
+    vertices.resize(totalVertices);
+
+    // Now update positions
     updateVertexPositions();
 }
 
@@ -196,6 +207,8 @@ Spectrogram::~Spectrogram() {
         fftw_free(fft_out);
     }
 }
+
+// Spectrogram UI and Processing Methods
 
 void Spectrogram::initializeUI() {
     // Use the spectrogramSize directly (no recalculation needed)
@@ -269,33 +282,59 @@ void Spectrogram::initializeUI() {
 }
 
 void Spectrogram::updateVertexPositions() {
+    // Calculate frequency scale parameters
     const float sampleRate = 48000.0f;
     const float minFreq = 10.0f;
     const float maxFreq = 24000.0f;
-
     float freqPerBin = sampleRate / static_cast<float>(FFT_SIZE);
 
-    for (size_t x = 0; x < HISTORY_SIZE; ++x) {
-        for (size_t y = 0; y < FFT_SIZE / 2; ++y) {
-            size_t idx = (x * FFT_SIZE / 2 + y) * 4;
+    // Get current vertex count
+    size_t vertexCount = vertices.getVertexCount();
 
+    // Skip if no vertices
+    if (vertexCount == 0) {
+        return;
+    }
+
+    // Calculate how many frames we can place in the vertex array
+    size_t framesPerRow = FFT_SIZE / 2;
+    size_t maxFrames = vertexCount / (framesPerRow * 4);
+
+    // Ensure we don't exceed the vertex array bounds
+    maxFrames = std::min(maxFrames, HISTORY_SIZE);
+
+    // Update vertex positions with careful bounds checking
+    for (size_t x = 0; x < maxFrames; ++x) {
+        for (size_t y = 0; y < framesPerRow; ++y) {
+            // Calculate vertex index
+            size_t idx = (x * framesPerRow + y) * 4;
+
+            // Skip if we're out of bounds
+            if (idx + 3 >= vertexCount) {
+                continue;
+            }
+
+            // Calculate x position values
             float xRatio = static_cast<float>(x) / static_cast<float>(HISTORY_SIZE);
             float xpos = spectrogramPosition.x + (xRatio * spectrogramSize.x);
             float width = spectrogramSize.x / static_cast<float>(HISTORY_SIZE);
 
+            // Calculate y position values with logarithmic frequency scale
             float freq = static_cast<float>(y) * freqPerBin;
             freq = std::max(minFreq, std::min(maxFreq, freq));
 
             float yRatio = std::log10(freq / minFreq) / std::log10(maxFreq / minFreq);
-            yRatio = std::max(0.0f, std::min(1.0f, yRatio));
+            yRatio = std::max(0.0f, std::min(1.0f, yRatio)); // Clamp to valid range
             float ypos = spectrogramPosition.y + ((1.0f - yRatio) * spectrogramSize.y);
 
+            // Calculate next y position (for bottom of the quad)
             float nextFreq = static_cast<float>(y + 1) * freqPerBin;
             nextFreq = std::max(minFreq, std::min(maxFreq, nextFreq));
             float nextYRatio = std::log10(nextFreq / minFreq) / std::log10(maxFreq / minFreq);
-            nextYRatio = std::max(0.0f, std::min(1.0f, nextYRatio));
+            nextYRatio = std::max(0.0f, std::min(1.0f, nextYRatio)); // Clamp to valid range
             float nextYpos = spectrogramPosition.y + ((1.0f - nextYRatio) * spectrogramSize.y);
 
+            // Set vertex positions for this quad
             vertices[idx].position = sf::Vector2f(xpos, ypos);
             vertices[idx + 1].position = sf::Vector2f(xpos + width, ypos);
             vertices[idx + 2].position = sf::Vector2f(xpos + width, nextYpos);
@@ -304,9 +343,12 @@ void Spectrogram::updateVertexPositions() {
     }
 }
 
+// Fix for processSamples method to correctly distribute samples across the time axis
+
+// CRITICAL FIX: Simplified Spectrogram::processSamples to prevent UI freezing
 void Spectrogram::processSamples(const std::vector<float>& samples) {
     // Ignore empty or too small sample sets
-    if (samples.empty() || samples.size() < 512) {
+    if (samples.empty() || samples.size() < FFT_SIZE) {
         return;
     }
 
@@ -316,94 +358,118 @@ void Spectrogram::processSamples(const std::vector<float>& samples) {
         first_sample = false;
     }
 
-    // Use a static buffer to persist between calls for proper overlap
-    static std::vector<float> overlappingBuffer;
+    // Apply window function and prepare for FFT
+    for (size_t i = 0; i < FFT_SIZE; ++i) {
+        fft_in[i] = static_cast<double>(i < samples.size() ? samples[i] * window_function[i] : 0.0f);
+    }
 
-    // Add new samples to our buffer
-    overlappingBuffer.insert(overlappingBuffer.end(), samples.begin(), samples.end());
+    // Execute FFT (this is computationally intensive but necessary)
+    fftw_execute(fft_plan);
 
-    // Process multiple frames if we have enough data
-    // Use 50% overlap between frames (FFT_SIZE = 1024, HOP_SIZE = 512)
-    while (overlappingBuffer.size() >= FFT_SIZE) {
-        // Apply window function
-        for (size_t i = 0; i < FFT_SIZE; ++i) {
-            fft_in[i] = static_cast<double>(overlappingBuffer[i] * window_function[i]);
+    // Calculate magnitude spectrum
+    std::vector<float> magnitudes(FFT_SIZE / 2, 0.0f);
+    for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
+        float real = static_cast<float>(fft_out[i][0]);
+        float imag = static_cast<float>(fft_out[i][1]);
+        magnitudes[i] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 0.5f);
+    }
+
+    // Critical section - keep it as short as possible
+    {
+        std::lock_guard<std::mutex> lock(history_mutex);
+
+        // Add the new frame
+        magnitude_history.push_back(magnitudes);
+
+        // Calculate timestamp
+        auto now = std::chrono::steady_clock::now();
+        double seconds = std::chrono::duration<double>(now - start_time).count();
+        column_timestamps.push_back(seconds);
+
+        // Maintain fixed history size
+        while (magnitude_history.size() > HISTORY_SIZE) {
+            magnitude_history.pop_front();
+            column_timestamps.pop_front();
         }
 
-        // Execute FFT
-        fftw_execute(fft_plan);
-
-        // Calculate magnitude spectrum
-        std::vector<float> magnitudes(FFT_SIZE / 2);
-        for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
-            float real = static_cast<float>(fft_out[i][0]);
-            float imag = static_cast<float>(fft_out[i][1]);
-            // Normalize properly
-            magnitudes[i] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 0.5f);
+        // Update shared memory if available (non-blocking)
+        if (sharedMem) {
+            memcpy(sharedMem->magnitudes, magnitudes.data(),
+                std::min(sizeof(sharedMem->magnitudes), sizeof(float) * magnitudes.size()));
+            sharedMem->timestamp = seconds;
+            sharedMem->new_data_available = true;
         }
-
-        // Add this frame to history with proper thread safety
-        {
-            std::unique_lock<std::mutex> lock(history_mutex);
-
-            // Add the new frame to history
-            magnitude_history.push_back(magnitudes);
-
-            // Calculate timestamp for this frame
-            auto now = std::chrono::steady_clock::now();
-            double seconds = std::chrono::duration<double>(now - start_time).count();
-            column_timestamps.push_back(seconds);
-
-            // Update shared memory if available
-            if (sharedMem) {
-                memcpy(sharedMem->magnitudes, magnitudes.data(), sizeof(float) * (FFT_SIZE / 2));
-                sharedMem->timestamp = seconds;
-                sharedMem->new_data_available = true;
-            }
-
-            // Maintain fixed history size
-            while (magnitude_history.size() > HISTORY_SIZE) {
-                magnitude_history.pop_front();
-                column_timestamps.pop_front();
-            }
-        }
-
-        // Advance buffer by HOP_SIZE (not the full FFT_SIZE to maintain overlap)
-        overlappingBuffer.erase(overlappingBuffer.begin(), overlappingBuffer.begin() + HOP_SIZE);
     }
 }
 
+// CRITICAL FIX: Simplified draw method to prevent blocking
 void Spectrogram::draw() {
-    std::unique_lock<std::mutex> lock(history_mutex);
+    // Make a local copy of the data to minimize lock time
+    std::deque<std::vector<float>> history_copy;
+    {
+        std::lock_guard<std::mutex> lock(history_mutex);
+        // Only copy if we have data to avoid unnecessary work
+        if (!magnitude_history.empty()) {
+            history_copy = magnitude_history;
+        }
+    }
 
+    // Draw background elements (these are fast operations)
     window.draw(spectrogramBackground);
     window.draw(titleText);
 
-    for (size_t x = 0; x < magnitude_history.size(); ++x) {
-        const auto& magnitudes = magnitude_history[x];
-        for (size_t y = 0; y < FFT_SIZE / 2; ++y) {
-            size_t idx = (x * FFT_SIZE / 2 + y) * 4;
-            sf::Color color = getColor(magnitudes[y]);
-
-            for (int i = 0; i < 4; ++i) {
-                vertices[idx + i].color = color;
-            }
-        }
-    }
-    window.draw(vertices);
-
-    // Draw only the position indicator line, not the text
-    if (showPositionIndicator) {
-        window.draw(positionIndicator);
-    }
-
-    // Draw frequency and time labels
+    // Draw labels
     for (const auto& label : frequencyLabels) {
         window.draw(label);
     }
     for (const auto& label : timeLabels) {
         window.draw(label);
     }
+
+    if (showPositionIndicator) {
+        window.draw(positionIndicator);
+    }
+
+    // Skip spectrum drawing if no data
+    if (history_copy.empty()) {
+        return;
+    }
+
+    // Ensure vertex array is properly sized (only do this when needed)
+    if (vertices.getVertexCount() != HISTORY_SIZE * (FFT_SIZE / 2) * 4) {
+        vertices.resize(HISTORY_SIZE * (FFT_SIZE / 2) * 4);
+        updateVertexPositions();
+    }
+
+    // Update colors based on magnitude data
+    size_t historySize = history_copy.size();
+    size_t binsPerFrame = FFT_SIZE / 2;
+
+    // Use a simplified drawing approach that won't freeze the UI
+    for (size_t x = 0; x < historySize; ++x) {
+        // Calculate position to draw this frame (distributed across the window width)
+        size_t displayX = x * HISTORY_SIZE / historySize;
+        if (displayX >= HISTORY_SIZE) displayX = HISTORY_SIZE - 1;
+
+        const auto& magnitudes = history_copy[x];
+        if (magnitudes.empty()) continue;
+
+        for (size_t y = 0; y < binsPerFrame && y < magnitudes.size(); ++y) {
+            size_t idx = (displayX * binsPerFrame + y) * 4;
+
+            // Skip if out of bounds
+            if (idx + 3 >= vertices.getVertexCount()) continue;
+
+            // Set color
+            sf::Color color = getColor(magnitudes[y]);
+            for (int i = 0; i < 4; ++i) {
+                vertices[idx + i].color = color;
+            }
+        }
+    }
+
+    // Draw the vertex array
+    window.draw(vertices);
 }
 
 void Spectrogram::handleResize() {
@@ -419,7 +485,8 @@ std::vector<float> Spectrogram::getCurrentMagnitudes() {
     if (magnitude_history.empty()) {
         return std::vector<float>();
     }
-    return magnitude_history.back();
+    std::lock_guard<std::mutex> lock(history_mutex);
+    return magnitude_history.empty() ? std::vector<float>() : magnitude_history.back();
 }
 
 // StaticSpectrogram implementation
@@ -427,8 +494,34 @@ StaticSpectrogram::StaticSpectrogram(sf::RenderWindow& win, const std::vector<st
     const std::string& titleText, const sf::Vector2f& position)
     : SpectrogramBase(win, titleText, position), spectrogramData(data)
 {
+    // Set default size
+    spectrogramSize = sf::Vector2f(800, 600);
+
+    // Initialize UI elements before setting vertex array
     initializeUI();
-    updateVertexPositions();
+
+    // Check if we have data before resizing vertices
+    size_t numFrames = spectrogramData.size();
+    size_t bins = FFT_SIZE / 2;
+
+    if (numFrames > 0) {
+        // Set primitive type for vertex array
+        vertices.setPrimitiveType(sf::Quads);
+
+        // Calculate total vertex count needed
+        size_t totalVertices = numFrames * bins * 4;
+
+        // Resize vertex array
+        vertices.resize(totalVertices);
+
+        // Update vertex positions
+        updateVertexPositions();
+    }
+    else {
+        // Initialize with empty vertex array
+        vertices.setPrimitiveType(sf::Quads);
+        vertices.resize(0);
+    }
 }
 
 void StaticSpectrogram::initializeUI() {
@@ -497,8 +590,17 @@ void StaticSpectrogram::initializeUI() {
 void StaticSpectrogram::updateVertexPositions() {
     size_t numFrames = spectrogramData.size();
     size_t bins = FFT_SIZE / 2;
-    vertices.setPrimitiveType(sf::Quads);
-    vertices.resize(numFrames * bins * 4);
+
+    // Skip if no data
+    if (numFrames == 0) {
+        return;
+    }
+
+    // Check if vertex array has been properly sized
+    if (vertices.getVertexCount() != numFrames * bins * 4) {
+        vertices.resize(numFrames * bins * 4);
+    }
+
     float frameWidth = spectrogramSize.x / static_cast<float>(numFrames);
     float sampleRate = 48000.0f;
     float freqPerBin = sampleRate / static_cast<float>(FFT_SIZE);
@@ -508,6 +610,12 @@ void StaticSpectrogram::updateVertexPositions() {
     for (size_t x = 0; x < numFrames; ++x) {
         for (size_t y = 0; y < bins; ++y) {
             size_t idx = (x * bins + y) * 4;
+
+            // Skip if index is out of bounds
+            if (idx + 3 >= vertices.getVertexCount()) {
+                continue;
+            }
+
             float xpos = spectrogramPosition.x + static_cast<float>(x) * frameWidth;
             float freq = static_cast<float>(y) * freqPerBin;
             freq = std::max(minFreq, std::min(maxFreq, freq));
@@ -528,40 +636,89 @@ void StaticSpectrogram::updateVertexPositions() {
 }
 
 void StaticSpectrogram::draw() {
+    // Draw background elements
     window.draw(spectrogramBackground);
     window.draw(titleText);
 
-    size_t numFrames = spectrogramData.size();
-    size_t bins = FFT_SIZE / 2;
-
-    for (size_t x = 0; x < numFrames; ++x) {
-        const auto& frame = spectrogramData[x];
-        if (!frame.empty()) {
-            // Apply consistent normalization
-            std::vector<float> normalized = normalizeSpectrum(frame);
-
-            for (size_t y = 0; y < bins && y < normalized.size(); ++y) {
-                size_t idx = (x * bins + y) * 4;
-                sf::Color color = getColor(normalized[y]);
-                vertices[idx].color = color;
-                vertices[idx + 1].color = color;
-                vertices[idx + 2].color = color;
-                vertices[idx + 3].color = color;
-            }
-        }
+    // Always draw labels
+    for (const auto& label : frequencyLabels) {
+        window.draw(label);
     }
-    window.draw(vertices);
+    for (const auto& label : timeLabels) {
+        window.draw(label);
+    }
 
-    // Draw only the position indicator line, not the text
+    // Draw position indicator if needed
     if (showPositionIndicator) {
         window.draw(positionIndicator);
     }
 
-    // Draw frequency and time labels
-    for (const auto& label : frequencyLabels)
-        window.draw(label);
-    for (const auto& label : timeLabels)
-        window.draw(label);
+    // Skip spectrum drawing if no data
+    if (spectrogramData.empty()) {
+        return;
+    }
+
+    // Get dimensions
+    size_t numFrames = spectrogramData.size();
+    size_t bins = FFT_SIZE / 2;
+
+    // CRITICAL FIX: Ensure vertex array is properly sized
+    size_t requiredVertices = numFrames * bins * 4;
+    if (vertices.getVertexCount() != requiredVertices) {
+        vertices.resize(requiredVertices);
+        updateVertexPositions();
+    }
+
+    // Only continue if we have vertices to draw
+    if (vertices.getVertexCount() == 0) {
+        return;
+    }
+
+    // Update colors for each vertex with careful bounds checking
+    for (size_t x = 0; x < numFrames; ++x) {
+        // Skip if frame index is out of range
+        if (x >= spectrogramData.size()) {
+            continue;
+        }
+
+        const auto& frame = spectrogramData[x];
+        if (frame.empty()) {
+            continue;
+        }
+
+        // Apply normalization
+        std::vector<float> normalized = normalizeSpectrum(frame);
+
+        // Determine how many bins we can safely process
+        size_t maxBins = std::min(bins, normalized.size());
+
+        for (size_t y = 0; y < maxBins; ++y) {
+            // Calculate vertex index
+            size_t idx = (x * bins + y) * 4;
+
+            // Skip if vertex index is out of range
+            if (idx + 3 >= vertices.getVertexCount()) {
+                break;
+            }
+
+            // Get color (with bounds check)
+            sf::Color color;
+            if (y < normalized.size()) {
+                color = getColor(normalized[y]);
+            }
+            else {
+                color = sf::Color::Black; // Default for safety
+            }
+
+            // Update vertex colors
+            for (int i = 0; i < 4; ++i) {
+                vertices[idx + i].color = color;
+            }
+        }
+    }
+
+    // Draw the spectrum data
+    window.draw(vertices);
 }
 
 void StaticSpectrogram::handleResize() {
