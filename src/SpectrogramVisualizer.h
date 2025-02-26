@@ -55,6 +55,10 @@ protected:
     // Add normalization function to ensure consistency
     std::vector<float> normalizeSpectrum(const std::vector<float>& magnitudes);
 
+    // New methods for color matching
+    void matchStaticSpectrogramColor(sf::Color& color, float normalizedFreq);
+    void applyFrequencyBoosting(std::vector<float>& magnitudes);
+
 public:
     SpectrogramBase(sf::RenderWindow& win, const std::string& title, const sf::Vector2f& position);
     virtual ~SpectrogramBase() {}

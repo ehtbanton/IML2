@@ -5,7 +5,7 @@
 #pragma comment(lib, "ole32.lib")
 
 // Function to normalize audio to a consistent RMS level
-void normalizeAudioBatch(std::vector<float>& samples, float targetRMS = 0.1f) {
+void normalizeAudioBatch(std::vector<float>& samples, float targetRMS = 0.15f) {
     if (samples.empty()) return;
 
     // Calculate current RMS
@@ -18,7 +18,7 @@ void normalizeAudioBatch(std::vector<float>& samples, float targetRMS = 0.1f) {
 
     // Avoid division by very small numbers and only normalize if needed
     if (currentRMS > 1e-6f) {
-        // Calculate scaling factor
+        // Calculate scaling factor and apply slightly stronger scaling to match static
         float scale = targetRMS / currentRMS;
 
         // Apply scaling
@@ -137,55 +137,65 @@ void AudioCapture::cleanupDevice() {
     if (pwfx) { CoTaskMemFree(pwfx); pwfx = nullptr; }
 }
 
-// CRITICAL FIX: Simplified AudioCapture processing to avoid freezing
 void AudioCapture::processBatch(std::vector<float>& batchBuffer) {
     if (!spectrogram || batchBuffer.empty()) return;
 
-    // Process in smaller chunks to avoid blocking too long
-    static const size_t MAX_FRAMES_PER_BATCH = 10;
+    // Use 50% overlap for good spectral resolution with reasonable performance
     static const size_t STEP_SIZE = FFT_SIZE / 2;  // 50% overlap
 
-    // Limit the number of frames we process to avoid freezing
-    size_t framesToProcess = std::min(
-        (batchBuffer.size() - FFT_SIZE) / STEP_SIZE + 1,
-        MAX_FRAMES_PER_BATCH
-    );
+    // Process in smaller batches to prevent UI blocking
+    size_t processedFrames = 0;
+    size_t maxFramesToProcess = 10; // Process at most 10 frames per batch
 
-    for (size_t i = 0; i < framesToProcess; i++) {
-        size_t startPos = i * STEP_SIZE;
-        if (startPos + FFT_SIZE > batchBuffer.size()) break;
+    for (size_t startPos = 0;
+        startPos + FFT_SIZE <= batchBuffer.size() && processedFrames < maxFramesToProcess;
+        startPos += STEP_SIZE, processedFrames++) {
 
-        // Extract frame
+        // Extract frame with bounds checking
         std::vector<float> frame(FFT_SIZE);
         for (size_t j = 0; j < FFT_SIZE; j++) {
-            frame[j] = batchBuffer[startPos + j];
+            if (startPos + j < batchBuffer.size()) {
+                frame[j] = batchBuffer[startPos + j];
+            }
+            else {
+                frame[j] = 0.0f;
+            }
         }
 
-        // Normalize if not empty
+        // Check if frame contains audio or is silent
         bool isEmpty = true;
-        for (float sample : frame) {
-            if (std::abs(sample) > 1e-6f) {
+        for (size_t i = 0; i < frame.size(); i += 16) {
+            if (i < frame.size() && std::abs(frame[i]) > 1e-6f) {
                 isEmpty = false;
                 break;
             }
         }
 
+        // Apply normalization if not silent
         if (!isEmpty) {
-            normalizeAudioBatch(frame);
+            normalizeAudioBatch(frame, 0.15f);
         }
 
-        // Process the frame (this will be done in the audio thread)
-        spectrogram->processSamples(frame);
+        // Process the frame
+        try {
+            spectrogram->processSamples(frame);
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Exception in processSamples: " << e.what() << std::endl;
+        }
     }
 }
 
-// CRITICAL FIX: Simplified captureLoop to prevent excessive processing
+// Updated AudioCapture captureLoop for improved silence handling and update rate
 void AudioCapture::captureLoop() {
     batchStartTime = std::chrono::steady_clock::now();
+    lastPrintTime = batchStartTime;
 
-    // Use simpler capture buffer handling
-    std::vector<float> captureBuffer;
-    captureBuffer.reserve(batchSize);
+    std::vector<float> localCaptureBuffer;
+    localCaptureBuffer.reserve(batchSize);
+
+    // Timer for sending silence frames when no audio is detected
+    sf::Clock silenceTimer;
 
     while (isRunning) {
         UINT32 packetLength = 0;
@@ -198,19 +208,33 @@ void AudioCapture::captureLoop() {
         auto now = std::chrono::steady_clock::now();
         double elapsedSeconds = std::chrono::duration<double>(now - batchStartTime).count();
 
-        // Process data every 0.1 seconds (faster but not too frequent)
-        if (elapsedSeconds >= 0.1 && captureBuffer.size() >= FFT_SIZE) {
-            processBatch(captureBuffer);
+        // Process data every 0.1 seconds for faster updates
+        if (elapsedSeconds >= 0.1 && localCaptureBuffer.size() >= FFT_SIZE) {
+            processBatch(localCaptureBuffer);
 
             // Keep a small overlap for continuous processing
-            size_t overlapSize = std::min(FFT_SIZE, captureBuffer.size());
-            std::vector<float> overlap(captureBuffer.end() - overlapSize, captureBuffer.end());
-            captureBuffer = overlap;
+            size_t overlapSize = std::min(FFT_SIZE, localCaptureBuffer.size());
+            std::vector<float> overlap(localCaptureBuffer.end() - overlapSize, localCaptureBuffer.end());
+            localCaptureBuffer = overlap;
             batchStartTime = now;
+
+            // Reset silence timer when we process audio
+            silenceTimer.restart();
         }
 
+        // If no data is available, check if we need to send a silence frame
         if (packetLength == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // If it's been 100ms since last audio, send a silence frame
+            if (silenceTimer.getElapsedTime().asMilliseconds() > 100) {
+                // Send a silence frame to maintain display updates
+                std::vector<float> silenceFrame(FFT_SIZE, 0.0f);
+                if (spectrogram) {
+                    spectrogram->processSamples(silenceFrame);
+                }
+                silenceTimer.restart();
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
 
@@ -226,18 +250,21 @@ void AudioCapture::captureLoop() {
             if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
                 float* floatData = reinterpret_cast<float*>(data);
 
-                // Add samples to buffer (simplified)
-                size_t startIdx = captureBuffer.size();
-                captureBuffer.resize(startIdx + numFramesAvailable);
+                size_t startIdx = localCaptureBuffer.size();
+                localCaptureBuffer.resize(startIdx + numFramesAvailable);
 
                 for (size_t i = 0; i < numFramesAvailable; ++i) {
-                    // Mix to mono
                     float sum = 0.0f;
                     for (unsigned int ch = 0; ch < numChannels && (i * numChannels + ch) < (numFramesAvailable * numChannels); ++ch) {
                         sum += floatData[i * numChannels + ch];
                     }
-                    captureBuffer[startIdx + i] = sum / static_cast<float>(numChannels);
+                    localCaptureBuffer[startIdx + i] = sum / static_cast<float>(numChannels);
                 }
+            }
+            else {
+                // Handle silent audio packets by adding zeros
+                size_t startIdx = localCaptureBuffer.size();
+                localCaptureBuffer.resize(startIdx + numFramesAvailable, 0.0f);
             }
 
             hr = captureClient->ReleaseBuffer(numFramesAvailable);

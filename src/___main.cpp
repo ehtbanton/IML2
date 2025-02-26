@@ -27,7 +27,16 @@
 // Global atomic flag for controlling background processing
 std::atomic<bool> g_processingActive(true);
 
-// Background processing thread function with improved matching
+// Optimize window settings for better responsiveness
+void optimizeWindowSettings(sf::RenderWindow& window) {
+    // Remove frame rate limiting to allow maximum responsiveness
+    window.setFramerateLimit(0);
+
+    // Keep VSync enabled for smoother rendering
+    window.setVerticalSyncEnabled(true);
+}
+
+// Background processing thread function with improved matching and reduced CPU usage
 void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
     StaticSpectrogram* staticSpectrogram,
     std::atomic<double>* currentTimestamp,
@@ -43,21 +52,21 @@ void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
     std::cout << "Background processing started" << std::endl;
 
     while (g_processingActive) {
-        // Update at a higher rate for more responsive matching
+        // Update more frequently (every 30ms instead of every frame)
         if (updateTimer.getElapsedTime().asMilliseconds() >= 30) {
             auto current_magnitudes = liveSpectrogram->getCurrentMagnitudes();
 
             if (!current_magnitudes.empty()) {
                 frameCounter++;
 
-                // Try multiple matching approaches
+                // Process in a way that doesn't block the main thread for too long
                 auto matchResult = matcher->findMatchWithConfidence(current_magnitudes);
 
                 // Update atomic values that main thread can read
                 *currentTimestamp = matcher->getTimestamp(matchResult.first);
                 *currentConfidence = matchResult.second;
 
-                // Print diagnostics every 30 frames
+                // Print diagnostics less frequently to reduce console output
                 if (frameCounter % 30 == 0) {
                     std::cout << "Current match position: " << *currentTimestamp
                         << "s, confidence: " << (*currentConfidence * 100.0f)
@@ -68,22 +77,22 @@ void backgroundProcessing(AudioMatcher* matcher, Spectrogram* liveSpectrogram,
             updateTimer.restart();
         }
 
-        // Print stats every 10 seconds
+        // Print stats less frequently to reduce CPU usage
         if (statsTimer.getElapsedTime().asSeconds() >= 10.0f) {
             matcher->printStats();
             statsTimer.restart();
         }
 
-        // Sleep to prevent CPU thrashing
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // Sleep more to allow the main thread to process
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     std::cout << "Background processing stopped" << std::endl;
 }
 
 int main() {
-    // Set process priority to above normal
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    // Set process priority to above normal for better UI responsiveness
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     // Initialize FFTW threads for better performance
     fftw_init_threads();
@@ -130,12 +139,10 @@ int main() {
     sf::VideoMode desktopMode = sf::VideoMode::getDesktopMode();
 
     // Create a fullscreen window
-    sf::RenderWindow window(desktopMode, "Audio Position Matcher",
-        sf::Style::Fullscreen);
+    sf::RenderWindow window(desktopMode, "Audio Position Matcher", sf::Style::Fullscreen);
 
-    // Use VSync for steady frame rate
-    window.setVerticalSyncEnabled(true);
-    window.setFramerateLimit(60);
+    // Optimize window settings for better responsiveness
+    optimizeWindowSettings(window);
 
     // Calculate positions with more spacing for fullscreen
     float windowWidth = static_cast<float>(desktopMode.width);
@@ -207,9 +214,8 @@ int main() {
     fpsText.setPosition(10.0f, 10.0f);
     fpsText.setFillColor(sf::Color::Yellow);
 
-    // Reduced update interval for UI updates to save CPU
-    sf::Clock uiUpdateClock;
-    bool needsUIUpdate = true;
+    // Add a clock to enforce minimum update frequency
+    sf::Clock updateClock;
 
     // Main loop: poll events and draw both spectrograms in one window
     while (window.isOpen()) {
@@ -253,52 +259,53 @@ int main() {
 
                 // Update status text position
                 statusText.setPosition(newWidth * 0.5f - 150.0f, newHeight * 0.9f);
-
-                needsUIUpdate = true;
             }
         }
 
-        // Update UI only every 50ms (20 times per second) to improve performance
-        if (uiUpdateClock.getElapsedTime().asMilliseconds() >= 50 || needsUIUpdate) {
+        // Force updates at minimum twice per second (500ms)
+        // This ensures the window updates regularly regardless of data processing
+        bool shouldUpdate = updateClock.getElapsedTime().asMilliseconds() >= 200;
+
+        if (shouldUpdate) {
             // Use the values updated by background thread
             double timestamp = currentTimestamp.load();
             float confidence = currentConfidence.load();
 
-            // Only update UI if we have values or need a UI update
-            if (confidence > 0.0f || needsUIUpdate) {
-                // Update position indicators with red vertical line only (no text)
-                // The position indicator shows the detected position in the song
-                liveSpectrogram.updatePositionIndicator(timestamp, confidence);
-                staticSpectrogram.updatePositionIndicator(timestamp, confidence);
+            // Update position indicators with red vertical line
+            liveSpectrogram.updatePositionIndicator(timestamp, confidence);
+            staticSpectrogram.updatePositionIndicator(timestamp, confidence);
 
-                // Update status text
-                std::stringstream ss;
-                int minutes = static_cast<int>(timestamp) / 60;
-                int seconds = static_cast<int>(timestamp) % 60;
-                ss << "Position: " << minutes << ":"
-                    << std::setfill('0') << std::setw(2) << seconds
-                    << " - Confidence: " << std::fixed << std::setprecision(0)
-                    << (confidence * 100.0f) << "%";
-                statusText.setString(ss.str());
-            }
+            // Update status text
+            std::stringstream ss;
+            int minutes = static_cast<int>(timestamp) / 60;
+            int seconds = static_cast<int>(timestamp) % 60;
+            ss << "Position: " << minutes << ":"
+                << std::setfill('0') << std::setw(2) << seconds
+                << " - Confidence: " << std::fixed << std::setprecision(0)
+                << (confidence * 100.0f) << "%";
+            statusText.setString(ss.str());
 
-            uiUpdateClock.restart();
-            needsUIUpdate = false;
+            // Clear the window with a dark background
+            window.clear(sf::Color(10, 10, 10));
+
+            // Draw spectrograms
+            liveSpectrogram.draw();
+            staticSpectrogram.draw();
+
+            // Draw minimal UI elements
+            window.draw(statusText);
+            window.draw(fpsText);
+
+            // Display the window contents
+            window.display();
+
+            // Restart the clock
+            updateClock.restart();
         }
-
-        // Clear the window with a dark background
-        window.clear(sf::Color(10, 10, 10));
-
-        // Draw spectrograms
-        liveSpectrogram.draw();
-        staticSpectrogram.draw();
-
-        // Draw minimal UI elements
-        window.draw(statusText);
-        window.draw(fpsText);
-
-        // Display the window contents
-        window.display();
+        else {
+            // Sleep a tiny amount to prevent CPU hogging
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
 
     // Clean up

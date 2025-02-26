@@ -28,22 +28,20 @@ SpectrogramBase::SpectrogramBase(sf::RenderWindow& win, const std::string& title
 }
 
 sf::Color SpectrogramBase::getColor(float magnitude) {
-    // Use a more aggressive normalization approach to ensure consistency
-    // First convert magnitude to decibels 
+    // Convert magnitude to decibels (logarithmic scale)
     float db = 20.0f * std::log10(magnitude + 1e-9f);
 
-    // Apply standardized normalization with fixed parameters
-    // These parameters will be identical for both spectrograms
-    float normalized = (db + 70.0f) / 60.0f;
+    // Use more aggressive normalization to match the static spectrogram
+    // This makes the colors more intense, with more reds and yellows
+    float normalized = (db + 60.0f) / 55.0f; // Adjusted parameters
     normalized = std::max(0.0f, std::min(1.0f, normalized));
 
-    // Apply gamma correction to enhance visibility of lower values
-    normalized = std::pow(normalized, 0.7f);
+    // Apply gamma correction to enhance mid-range values - match the static display
+    normalized = std::pow(normalized, 0.5f); // Lower gamma = brighter colors
 
-    // Create a consistent color map with distinct color steps
-    // This makes debugging easier as colors clearly represent value ranges
+    // Create color map identical to static spectrogram
     if (normalized < 0.2f) {
-        // Dark Blue to Blue
+        // Dark Blue to Blue (keep lower intensity as is)
         float t = normalized / 0.2f;
         return sf::Color(0, 0, static_cast<sf::Uint8>(64 + 191 * t));
     }
@@ -57,15 +55,53 @@ sf::Color SpectrogramBase::getColor(float magnitude) {
         float t = (normalized - 0.4f) / 0.2f;
         return sf::Color(0, 255, static_cast<sf::Uint8>(255 * (1.0f - t)));
     }
-    else if (normalized < 0.8f) {
+    else if (normalized < 0.7f) { // Compress this range for more yellows and reds
         // Green to Yellow
-        float t = (normalized - 0.6f) / 0.2f;
+        float t = (normalized - 0.6f) / 0.1f;
         return sf::Color(static_cast<sf::Uint8>(255 * t), 255, 0);
     }
     else {
-        // Yellow to Red
-        float t = (normalized - 0.8f) / 0.2f;
+        // Yellow to Red - expanded to create more reds like in the static spectrogram
+        float t = (normalized - 0.7f) / 0.3f;
+        t = std::min(1.0f, t); // Ensure we don't exceed 1.0
         return sf::Color(255, static_cast<sf::Uint8>(255 * (1.0f - t)), 0);
+    }
+}
+
+void SpectrogramBase::applyFrequencyBoosting(std::vector<float>& magnitudes) {
+    // Apply non-linear boosting to different frequency ranges
+    for (size_t i = 0; i < magnitudes.size(); ++i) {
+        float normalizedFreq = static_cast<float>(i) / magnitudes.size();
+
+        if (normalizedFreq < 0.1f) {
+            // Boost low frequencies (like in static spectrogram)
+            magnitudes[i] *= 1.6f;
+        }
+        else if (normalizedFreq < 0.3f) {
+            // Boost low-mid frequencies
+            magnitudes[i] *= 1.4f;
+        }
+        else if (normalizedFreq < 0.6f) {
+            // Boost mid frequencies
+            magnitudes[i] *= 1.2f;
+        }
+        // Higher frequencies match better already
+    }
+}
+
+void SpectrogramBase::matchStaticSpectrogramColor(sf::Color& color, float normalizedFreq) {
+    // Apply frequency-dependent color adjustment to match static spectrogram
+    // Static spectrogram is more saturated in certain frequency ranges
+
+    if (normalizedFreq < 0.2f) {
+        // Boost saturation in bass range
+        color.r = std::min(255, static_cast<int>(color.r * 1.2f));
+        color.g = std::min(255, static_cast<int>(color.g * 1.2f));
+    }
+    else if (normalizedFreq > 0.7f) {
+        // Slightly reduce brightness in high frequencies to match static
+        color.g = static_cast<sf::Uint8>(color.g * 0.9f);
+        color.b = static_cast<sf::Uint8>(color.b * 0.9f);
     }
 }
 
@@ -73,17 +109,17 @@ std::vector<float> SpectrogramBase::normalizeSpectrum(const std::vector<float>& 
     // Make a copy for modification
     std::vector<float> normalized = magnitudes;
 
-    // Find maximum value for scaling 
-    float maxVal = 1e-9f;
-    for (float val : normalized) {
-        maxVal = std::max(maxVal, val);
+    // Apply consistent amplification - use the same value for BOTH spectrograms
+    // This increases the values to make colors more vibrant
+    const float AMPLIFICATION = 5.0f; // Higher value = more bright colors
+
+    for (float& val : normalized) {
+        // Amplify the values to match the static spectrogram's intensity
+        val *= AMPLIFICATION;
     }
 
-    // Apply normalization to ensure consistent range
-    float scaleFactor = 0.5f / maxVal;  // Target a reasonable peak value
-    for (float& val : normalized) {
-        val *= scaleFactor;
-    }
+    // Apply frequency-dependent boosting to match the static spectrogram
+    applyFrequencyBoosting(normalized);
 
     return normalized;
 }
@@ -208,8 +244,6 @@ Spectrogram::~Spectrogram() {
     }
 }
 
-// Spectrogram UI and Processing Methods
-
 void Spectrogram::initializeUI() {
     // Use the spectrogramSize directly (no recalculation needed)
     spectrogramBackground.setSize(spectrogramSize);
@@ -288,6 +322,9 @@ void Spectrogram::updateVertexPositions() {
     const float maxFreq = 24000.0f;
     float freqPerBin = sampleRate / static_cast<float>(FFT_SIZE);
 
+    // Calculate the fixed segment width
+    float segmentWidth = spectrogramSize.x / static_cast<float>(HISTORY_SIZE);
+
     // Get current vertex count
     size_t vertexCount = vertices.getVertexCount();
 
@@ -300,70 +337,86 @@ void Spectrogram::updateVertexPositions() {
     size_t framesPerRow = FFT_SIZE / 2;
     size_t maxFrames = vertexCount / (framesPerRow * 4);
 
-    // Ensure we don't exceed the vertex array bounds
+    // Ensure we don't exceed vertex array bounds
     maxFrames = std::min(maxFrames, HISTORY_SIZE);
 
-    // Update vertex positions with careful bounds checking
+    // Update vertex positions with fixed segment width
     for (size_t x = 0; x < maxFrames; ++x) {
+        float xPosition = spectrogramPosition.x + (x * segmentWidth);
+
         for (size_t y = 0; y < framesPerRow; ++y) {
             // Calculate vertex index
             size_t idx = (x * framesPerRow + y) * 4;
 
-            // Skip if we're out of bounds
+            // Skip if out of bounds
             if (idx + 3 >= vertexCount) {
                 continue;
             }
-
-            // Calculate x position values
-            float xRatio = static_cast<float>(x) / static_cast<float>(HISTORY_SIZE);
-            float xpos = spectrogramPosition.x + (xRatio * spectrogramSize.x);
-            float width = spectrogramSize.x / static_cast<float>(HISTORY_SIZE);
 
             // Calculate y position values with logarithmic frequency scale
             float freq = static_cast<float>(y) * freqPerBin;
             freq = std::max(minFreq, std::min(maxFreq, freq));
 
             float yRatio = std::log10(freq / minFreq) / std::log10(maxFreq / minFreq);
-            yRatio = std::max(0.0f, std::min(1.0f, yRatio)); // Clamp to valid range
+            yRatio = std::max(0.0f, std::min(1.0f, yRatio));
             float ypos = spectrogramPosition.y + ((1.0f - yRatio) * spectrogramSize.y);
 
             // Calculate next y position (for bottom of the quad)
             float nextFreq = static_cast<float>(y + 1) * freqPerBin;
             nextFreq = std::max(minFreq, std::min(maxFreq, nextFreq));
             float nextYRatio = std::log10(nextFreq / minFreq) / std::log10(maxFreq / minFreq);
-            nextYRatio = std::max(0.0f, std::min(1.0f, nextYRatio)); // Clamp to valid range
+            nextYRatio = std::max(0.0f, std::min(1.0f, nextYRatio));
             float nextYpos = spectrogramPosition.y + ((1.0f - nextYRatio) * spectrogramSize.y);
 
-            // Set vertex positions for this quad
-            vertices[idx].position = sf::Vector2f(xpos, ypos);
-            vertices[idx + 1].position = sf::Vector2f(xpos + width, ypos);
-            vertices[idx + 2].position = sf::Vector2f(xpos + width, nextYpos);
-            vertices[idx + 3].position = sf::Vector2f(xpos, nextYpos);
+            // Set vertex positions for this quad with fixed segment width
+            vertices[idx].position = sf::Vector2f(xPosition, ypos);
+            vertices[idx + 1].position = sf::Vector2f(xPosition + segmentWidth, ypos);
+            vertices[idx + 2].position = sf::Vector2f(xPosition + segmentWidth, nextYpos);
+            vertices[idx + 3].position = sf::Vector2f(xPosition, nextYpos);
         }
     }
 }
 
-// Fix for processSamples method to correctly distribute samples across the time axis
-
-// CRITICAL FIX: Simplified Spectrogram::processSamples to prevent UI freezing
 void Spectrogram::processSamples(const std::vector<float>& samples) {
-    // Ignore empty or too small sample sets
-    if (samples.empty() || samples.size() < FFT_SIZE) {
+    // Ignore empty sample sets
+    if (samples.empty()) {
         return;
+    }
+
+    // Use the minimum size needed for processing
+    size_t sampleSize = std::min(samples.size(), FFT_SIZE);
+    bool isSilence = true;
+
+    // Check if this is a silent frame (check every 8th sample for efficiency)
+    for (size_t i = 0; i < sampleSize; i += 8) {
+        if (i < sampleSize && std::abs(samples[i]) > 1e-6f) {
+            isSilence = false;
+            break;
+        }
     }
 
     // Initialize time tracking on first sample
     if (first_sample) {
         start_time = std::chrono::steady_clock::now();
         first_sample = false;
+
+        if (vertices.getVertexCount() < HISTORY_SIZE * (FFT_SIZE / 2) * 4) {
+            vertices.resize(HISTORY_SIZE * (FFT_SIZE / 2) * 4);
+            updateVertexPositions();
+        }
+
+        std::lock_guard<std::mutex> lock(history_mutex);
+        magnitude_history.clear();
+        column_timestamps.clear();
     }
 
-    // Apply window function and prepare for FFT
+    // Apply window function to samples
     for (size_t i = 0; i < FFT_SIZE; ++i) {
-        fft_in[i] = static_cast<double>(i < samples.size() ? samples[i] * window_function[i] : 0.0f);
+        // Use zeros for any samples beyond what was provided
+        fft_in[i] = static_cast<double>(i < sampleSize ? samples[i] * window_function[i] : 0.0);
     }
 
-    // Execute FFT (this is computationally intensive but necessary)
+    // Execute FFT even for silence (to maintain proper timing)
     fftw_execute(fft_plan);
 
     // Calculate magnitude spectrum
@@ -371,19 +424,25 @@ void Spectrogram::processSamples(const std::vector<float>& samples) {
     for (size_t i = 0; i < FFT_SIZE / 2; ++i) {
         float real = static_cast<float>(fft_out[i][0]);
         float imag = static_cast<float>(fft_out[i][1]);
-        magnitudes[i] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 0.5f);
+        magnitudes[i] = std::sqrt(real * real + imag * imag) / (static_cast<float>(FFT_SIZE) * 0.25f);
     }
 
-    // Critical section - keep it as short as possible
+    // Apply frequency boosting (except for silence frames)
+    if (!isSilence) {
+        SpectrogramBase::applyFrequencyBoosting(magnitudes);
+    }
+
+    // Add this frame to history with proper thread safety
     {
         std::lock_guard<std::mutex> lock(history_mutex);
 
-        // Add the new frame
-        magnitude_history.push_back(magnitudes);
-
-        // Calculate timestamp
+        // Calculate timestamp with scaling factor
         auto now = std::chrono::steady_clock::now();
-        double seconds = std::chrono::duration<double>(now - start_time).count();
+        double elapsed = std::chrono::duration<double>(now - start_time).count();
+        double seconds = elapsed * 0.5; // Scale time by 0.5 to match reference
+
+        // Add the frame to history
+        magnitude_history.push_back(magnitudes);
         column_timestamps.push_back(seconds);
 
         // Maintain fixed history size
@@ -392,29 +451,28 @@ void Spectrogram::processSamples(const std::vector<float>& samples) {
             column_timestamps.pop_front();
         }
 
-        // Update shared memory if available (non-blocking)
-        if (sharedMem) {
+        // Update shared memory if available
+        if (sharedMem && !magnitudes.empty()) {
             memcpy(sharedMem->magnitudes, magnitudes.data(),
-                std::min(sizeof(sharedMem->magnitudes), sizeof(float) * magnitudes.size()));
+                std::min(sizeof(float) * magnitudes.size(), sizeof(sharedMem->magnitudes)));
             sharedMem->timestamp = seconds;
             sharedMem->new_data_available = true;
         }
     }
 }
 
-// CRITICAL FIX: Simplified draw method to prevent blocking
 void Spectrogram::draw() {
-    // Make a local copy of the data to minimize lock time
+    // Create a temporary copy of the data to avoid locking during drawing
     std::deque<std::vector<float>> history_copy;
     {
         std::lock_guard<std::mutex> lock(history_mutex);
-        // Only copy if we have data to avoid unnecessary work
         if (!magnitude_history.empty()) {
+            // Use a quick reference instead of copying the whole data
             history_copy = magnitude_history;
         }
     }
 
-    // Draw background elements (these are fast operations)
+    // Draw background elements
     window.draw(spectrogramBackground);
     window.draw(titleText);
 
@@ -441,29 +499,78 @@ void Spectrogram::draw() {
         updateVertexPositions();
     }
 
-    // Update colors based on magnitude data
+    // Use fixed-width segments for each frame
     size_t historySize = history_copy.size();
     size_t binsPerFrame = FFT_SIZE / 2;
 
-    // Use a simplified drawing approach that won't freeze the UI
-    for (size_t x = 0; x < historySize; ++x) {
-        // Calculate position to draw this frame (distributed across the window width)
-        size_t displayX = x * HISTORY_SIZE / historySize;
-        if (displayX >= HISTORY_SIZE) displayX = HISTORY_SIZE - 1;
+    // Calculate how many display columns we'll actually use
+    size_t displayColumns = std::min(historySize, HISTORY_SIZE);
 
-        const auto& magnitudes = history_copy[x];
+    // Calculate fixed segment width
+    float segmentWidth = spectrogramSize.x / HISTORY_SIZE;
+
+    // CRITICAL FIX: Find the last non-silence frame index to stop drawing at that point
+    size_t lastNonSilenceIndex = 0;
+    for (size_t i = history_copy.size(); i > 0; --i) {
+        const auto& magnitudes = history_copy[i - 1];
+        bool hasSignal = false;
+
+        // Check a few samples to see if there's any signal
+        for (size_t j = 0; j < magnitudes.size(); j += 16) {
+            if (j < magnitudes.size() && magnitudes[j] > 1e-6f) {
+                hasSignal = true;
+                break;
+            }
+        }
+
+        if (hasSignal) {
+            lastNonSilenceIndex = i;
+            break;
+        }
+    }
+
+    // Process each frame in our data
+    for (size_t i = 0; i < displayColumns; i++) {
+        // Skip if we're past the last non-silence frame at the edge
+        if (i > lastNonSilenceIndex && i > displayColumns * 0.9f) {
+            continue;
+        }
+
+        // Get the corresponding frame from history
+        if (i >= history_copy.size()) continue;
+
+        const auto& magnitudes = history_copy[i];
         if (magnitudes.empty()) continue;
 
-        for (size_t y = 0; y < binsPerFrame && y < magnitudes.size(); ++y) {
-            size_t idx = (displayX * binsPerFrame + y) * 4;
+        // Normalize the frame to match static spectrogram intensity
+        std::vector<float> normalizedMagnitudes = normalizeSpectrum(magnitudes);
+
+        // Calculate position for this frame
+        float xPosition = spectrogramPosition.x + (i * segmentWidth);
+
+        // Update colors for each frequency bin
+        for (size_t y = 0; y < binsPerFrame && y < normalizedMagnitudes.size(); ++y) {
+            // Calculate vertex array index
+            size_t idx = (i * binsPerFrame + y) * 4;
 
             // Skip if out of bounds
             if (idx + 3 >= vertices.getVertexCount()) continue;
 
-            // Set color
-            sf::Color color = getColor(magnitudes[y]);
-            for (int i = 0; i < 4; ++i) {
-                vertices[idx + i].color = color;
+            // Set vertex positions for this frame segment (fixed width)
+            vertices[idx].position = sf::Vector2f(xPosition, vertices[idx].position.y);
+            vertices[idx + 1].position = sf::Vector2f(xPosition + segmentWidth, vertices[idx + 1].position.y);
+            vertices[idx + 2].position = sf::Vector2f(xPosition + segmentWidth, vertices[idx + 2].position.y);
+            vertices[idx + 3].position = sf::Vector2f(xPosition, vertices[idx + 3].position.y);
+
+            // Calculate normalized frequency for color adjustments
+            float normalizedFreq = static_cast<float>(y) / binsPerFrame;
+
+            // Set color for this segment with frequency-dependent adjustments
+            sf::Color color = getColor(normalizedMagnitudes[y]);
+            SpectrogramBase::matchStaticSpectrogramColor(color, normalizedFreq);
+
+            for (int j = 0; j < 4; ++j) {
+                vertices[idx + j].color = color;
             }
         }
     }
@@ -686,7 +793,7 @@ void StaticSpectrogram::draw() {
             continue;
         }
 
-        // Apply normalization
+        // Apply normalization (using the same normalization settings as the live version)
         std::vector<float> normalized = normalizeSpectrum(frame);
 
         // Determine how many bins we can safely process
@@ -701,14 +808,12 @@ void StaticSpectrogram::draw() {
                 break;
             }
 
-            // Get color (with bounds check)
-            sf::Color color;
-            if (y < normalized.size()) {
-                color = getColor(normalized[y]);
-            }
-            else {
-                color = sf::Color::Black; // Default for safety
-            }
+            // Get color with frequency-dependent adjustments
+            float normalizedFreq = static_cast<float>(y) / bins;
+            sf::Color color = getColor(normalized[y]);
+
+            // Call with proper scope
+            this->matchStaticSpectrogramColor(color, normalizedFreq);
 
             // Update vertex colors
             for (int i = 0; i < 4; ++i) {
